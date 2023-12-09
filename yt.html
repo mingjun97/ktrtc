@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+  <title>Console</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+
+    .tab-container 
+    {
+   position:fixed;
+   left:0px;
+   bottom:0px;
+   height:50px;
+   width:100%;
+   background:#999;
+   display: flex;
+   z-index: 100;
+}
+
+    /* {
+        display: flex;
+        position: fixed;
+        width: 100vw;
+        top: calc(80vh - env(safe-area-inset-bottom));
+        z-index: 100;
+    } */
+
+    .tab {
+      cursor: pointer;
+      padding: 10px 20px;
+      background-color: #eee;
+      border: 1px solid #ccc;
+      flex: 1;
+      display: flex;
+      height: 20px;
+      margin: 1px;
+      border-radius: 5px;
+    }
+
+    .tab:hover {
+      background-color: #ddd;
+    }
+
+    .tab-content {
+      display: none;
+      text-align: center;
+    }
+
+
+    .tab.active {
+        background-color: lightblue;
+    }
+
+    #counter {
+        background-color: orange;
+        border-radius: 10px;
+        height: 20px;
+        width: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .song_list {
+        margin-top: 30px;
+        padding-bottom: 200px;
+    }
+
+    .song_list > div{
+        margin: 2px;
+        display: flex;
+        min-height: 50px;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid black;
+        border-top: 1px solid black;
+    }
+
+    .finished {
+        background: rgba(45,253,135,1);
+    }
+    .finished:has(+ div.processing) {
+        background: linear-gradient(0deg, rgba(34,193,195,1) 0%, rgba(45,253,135,1) 100%);
+    }
+
+    .error {
+        background: rgb(195,66,34);
+        background: linear-gradient(0deg, rgba(195,66,34,1) 0%, rgba(218,67,21,1) 83%, rgba(255,68,0,1) 100%);
+    }
+
+    .processing {
+        background: rgba(34,193,195,1);
+        position: relative;
+    }
+
+    .processing::after{
+        content: "";
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        animation: loading 1.5s ease-in infinite;
+        background: linear-gradient(90deg,  rgba(255,255,255,0) 10%, rgba(255,255,255,0.1) 5%, rgba(255,255,255,0.8) 20%, rgba(255,255,255,0) 21%);
+    }
+
+    .processing:has(+ div.pending) +.pending {
+        background: linear-gradient(180deg, rgba(34,193,195,1) 0%, #ffefbb 100%);
+    }
+
+    .pending {
+        background: #ffefbb;
+    }
+    .control-group {
+        display: flex;
+        min-width: 80px;
+        justify-content: space-around;
+    }
+
+    .control-group >div {
+        height: 45px;
+        width: 45px;
+        border-radius: 25px;
+        background-color: lightcyan;
+        line-height: 45px;
+        font-weight: bold;
+        font-size: 45px;
+        color: pink;
+        transition: all 0.5s ease-in-out;
+        overflow: hidden;
+        position: relative;
+    }
+
+    .control {
+        position: fixed;
+        bottom: 50px;
+        display: flex;
+        right: 0px;
+    }
+
+    .control > div {
+        height: 60px;
+        width: 60px;
+        border-radius: 25px;
+        background-color: rgba(52, 127, 231, 0.787);
+        margin: 5px;
+        color: white;
+        line-height: 60px;
+    }
+
+    form {
+      max-width: 400px;
+      margin: 0 auto;
+      background-color: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: column;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    input {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 16px;
+      box-sizing: border-box;
+      display: inline-block;
+    }
+
+
+    .control-group > div:after {
+        content: "";
+        background: #514576;
+        display: block;
+        position: absolute;
+        padding-top: 300%;
+        padding-left: 350%;
+        margin-left: -20px!important;
+        margin-top: -120%;
+        opacity: 0;
+        transition: all 0.8s
+    }
+
+    .control-group > div:active:after {
+    padding: 0;
+    margin: 0;
+    opacity: 1;
+    transition: 0s
+    }
+
+    button {
+        min-height: 50px;
+    }
+
+    .autocomplete {
+        /*the container must be positioned relative:*/
+        position: relative;
+        display: inline-block;
+    }
+    .autocomplete-items {
+        position: absolute;
+        border: 1px solid #d4d4d4;
+        border-bottom: none;
+        border-top: none;
+        z-index: 99;
+        /*position the autocomplete items to be the same width as the container:*/
+        top: 100%;
+        left: 0;
+        right: 0;
+        max-height: 60vh;
+        overflow: scroll;
+    }
+    .autocomplete-items div {
+        padding: 10px;
+        cursor: pointer;
+        background-color: #fff;
+        border-bottom: 1px solid #d4d4d4;
+    }
+    .autocomplete-items div:hover {
+    /*when hovering an item:*/
+        background-color: #e9e9e9;
+    }
+    .autocomplete-active {
+    /*when navigating through the items using the arrow keys:*/
+        background-color: DodgerBlue !important;
+        color: #ffffff;
+    }
+
+
+    .lds-dual-ring {
+    display: inline-block;
+    width: 80px;
+    height: 80px;
+    }
+    .lds-dual-ring:after {
+    content: " ";
+    display: block;
+    width: 64px;
+    height: 64px;
+    margin: 8px;
+    border-radius: 50%;
+    border: 6px solid #00ffe4;
+    border-color: #00ffe4 transparent #00ffe4 transparent;
+    animation: lds-dual-ring 1.2s linear infinite;
+    }
+    @keyframes lds-dual-ring {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+    }
+
+    @keyframes loading {
+        0% {
+            transform: translateX(-20%);
+
+        }
+        100% {
+            transform: translateX(130%);
+        }
+    }
+
+
+    .hints {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .hints >div {
+        margin: 5px;
+        padding: 5px;
+        border-radius: 5px;
+        background-color: #198bdc;
+        color: white;
+    }
+
+    .buttons {
+        display: flex;
+        flex-direction: column;
+        margin: 10px;
+        height: 110px;
+        justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+
+<div class="tab-container">
+  <div class="tab active" onclick="openTab('search')">Info</div>
+  <div class="tab" onclick="openTab('list')">List</div>
+</div>
+
+<div id="overlay" style="position: fixed; top: 0; background-color: #9999; height: 100vh; width: 100vh; z-index: 999; display: none;">
+    <div class="lds-dual-ring" style="margin: 50vh 50vw; transform: translate(-50%, -50%);"></div>
+</div>
+
+<div id="search" class="tab-content" style="display: block;">
+  <h2>添加Youtube源</h2>
+  <form id="youtube" onsubmit="return false">
+    <input type="text" id="link" name="link" placeholder="链接" >
+    
+    <button onclick="putlink()" style="height: 100px;" id="putlink-btn">
+        <div style="margin: auto;" id="putlink-text">获取</div>
+        <div class="lds-dual-ring" style="display: none; margin: auto" id="putlink-spiner"></div>
+    </button>
+    <div id="form-song-info" style="display: none;">
+        <div>
+
+            <label for="title">歌名</label>
+            <input type="text" id="title" name="title" placeholder="歌名">
+            <div style="display: flex;">
+                <button onclick="document.getElementById('title').value=''" style="min-width: 50px; margin-right: 10px;">清空</button>
+                <div>
+                    <div style="text-align: left;font-weight: bold;">快捷填入：</div>
+                    <div class="hints"></div>
+                </div>
+            </div>
+        </div>
+
+        <hr>
+        <div>
+            <label for="singer" style="margin-top: 10px;">歌手</label>
+            <div class="autocomplete" style="width:300px;">
+                <input type="text" id="singer" name="singer" placeholder="歌手">
+            </div>
+            <div style="display: flex;">
+                <button onclick="document.getElementById('singer').value=''" style="min-width: 50px; margin-right: 10px;">清空</button>
+                <div>
+                    <div style="text-align: left;font-weight: bold;">快捷填入：</div>
+                    <div class="hints"></div>
+                </div>
+            </div>
+        </div>
+        <div id="caption" style="display: none;">
+            <hr>
+            <label>字幕歌词</label>
+            <select id="caption-value" name="caption">
+            </select>
+        </div>
+        <div class="buttons">
+            <button onclick="submitForm()" style="background-color: lightgreen;">提交</button>
+            <button onclick="resetForm()" style="background-color: lightcoral;">重置</button>
+        </div>
+    </div>
+
+  </form>
+
+</div>
+
+<div id="list" class="tab-content">
+    <h2>当前队列</h2>
+  <div id="song_list" class="song_list"></div>
+  <div class="control">
+    <div onclick="fetchList()">刷新</div>
+  </div>
+</div>
+
+<script>
+  function openTab(tabName) {
+    // Hide all tab content
+    if (tabName === 'list') {
+        fetchList();
+    }
+    var tabs = document.getElementsByClassName("tab-content");
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].style.display = "none";
+    }
+
+    // Deactivate all tabs
+    var tabButtons = document.getElementsByClassName("tab");
+    for (var i = 0; i < tabButtons.length; i++) {
+      tabButtons[i].classList.remove("active");
+    }
+
+    // Show the selected tab content
+    document.getElementById(tabName).style.display = "block";
+
+    // Activate the selected tab
+    event.currentTarget.classList.add("active");
+  }
+//   var ws = null;
+
+  function putlink() {
+    document.getElementById('putlink-text').style.display = 'none';
+    document.getElementById('putlink-spiner').style.display = 'block';
+    document.getElementById('putlink-btn').disabled = true;
+    document.getElementById('link').disabled = true;
+    fetch('/yt_link', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({url: document.getElementById('link').value})
+        }).then(async (res)=> {
+            var data = await res.json();
+            if (data === null) throw new Error('Invalid link');
+            return data;
+        }).then(data => {
+            document.getElementById('putlink-btn').style.display = 'none';
+            document.getElementById('form-song-info').style.display = 'block';
+            document.getElementById('title').value = data.title;
+            document.getElementById('singer').value = data.singer;
+            if (data.captions != null) {
+                document.getElementById('caption').style.display = 'block';
+                document.getElementById('caption-value').innerHTML = "";
+                var option = document.createElement('option');
+                option.value = '';
+                option.innerHTML = '不使用';
+                document.getElementById('caption-value').appendChild(option);
+                data.captions.original.forEach((element)=>{
+                    var option = document.createElement('option');
+                    option.value = element[1];
+                    option.innerHTML = element[0];
+                    document.getElementById('caption-value').appendChild(option);
+                })
+                data.captions.generated.forEach((element)=>{
+                    var option = document.createElement('option');
+                    option.value = element[1];
+                    option.innerHTML = element[0];
+                    document.getElementById('caption-value').appendChild(option);
+                })
+
+            }
+            data.suggestions.push('[空格]');
+            data.suggestions.forEach((element)=>{
+                var hints = document.getElementsByClassName('hints');
+                for (var i = 0; i < hints.length; i++) {
+                    var l = document.createElement('div');
+                    l.innerHTML = element;
+                    hints.item(i).appendChild(l);
+                }
+            })
+        }).catch(()=>{
+            document.getElementById('putlink-text').style.display = 'block';
+            document.getElementById('putlink-spiner').style.display = 'none';
+            document.getElementById('putlink-btn').disabled = false;
+            document.getElementById('link').disabled = false;
+        });
+    // e.preventDefault();
+  }
+
+  function submitForm() {
+    var title = document.getElementById('title').value;
+    var singer = document.getElementById('singer').value;
+    var link = document.getElementById('link').value;
+    var payload = {title: title, singer: singer, url: link};
+    if (document.getElementById('caption-value').value != '') {
+        payload['caps'] = document.getElementById('caption-value').value;
+    }
+    fetch('/add_yt_source', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+        }).then(async (res)=> {
+            var data = await res.json();
+            if (data === null) throw new Error('Invalid link');
+            return data;
+        }).then(data => {
+            resetForm();
+            document.getElementById('overlay').style.display = 'inherit';
+            setTimeout(()=>{
+                document.getElementById('overlay').style.display = 'none';
+                openTab('list');
+                fetchList();
+            }, 1000);
+        }).catch(()=>{
+            document.getElementById('putlink-text').style.display = 'block';
+            document.getElementById('putlink-spiner').style.display = 'none';
+            document.getElementById('putlink-btn').disabled = false;
+            document.getElementById('link').disabled = false;
+        });
+  }
+
+  function resetForm() {
+    var hints = document.getElementsByClassName('hints');
+    for (var i = 0; i < hints.length; i++) {
+        hints.item(i).innerHTML = "";
+    }
+
+    document.getElementById('title').value = '';
+    document.getElementById('singer').value = '';
+    document.getElementById('putlink-text').style.display = 'block';
+    document.getElementById('putlink-spiner').style.display = 'none';
+    document.getElementById('putlink-btn').disabled = false;
+    document.getElementById('link').disabled = false;
+    document.getElementById('putlink-btn').style.display = 'block';
+    document.getElementById('form-song-info').style.display = 'none';
+    document.getElementById('caption-value').innerHTML = "";
+    document.getElementById('caption-value').value = '';
+    document.getElementById('caption').style.display = 'none';
+  }
+  function fetchList(){
+    var total = 0;
+    fetch('/yt_list').then(async (data)=> {
+        container = document.getElementById('song_list');
+        container.innerHTML = "";
+        data = await data.json();
+        (data).forEach(element => {
+            var l = document.createElement('div');
+            if (element[2] > 1000) {
+                l.innerHTML = `<div>${element[0]}-${element[1]} (已完成)</div>`;
+                l.classList.add('finished');
+            } else if (element[2] == -1) {
+                l.innerHTML = `<div>${element[0]}-${element[1]} (发生错误)</div>`;
+                l.classList.add('error');
+            } else if (element[2] != 0) {
+                l.innerHTML = `<div>${element[0]}-${element[1]} (处理中：进度 ${element[2]})</div>`;
+                l.classList.add('processing');
+            } else {
+                l.innerHTML = `<div>${element[0]}-${element[1]} (等待中)</div>`;
+                l.classList.add('pending');
+            }
+            container.appendChild(l);
+        });
+    })
+  }
+
+function autocomplete(inp, arr) {
+  /*the autocomplete function takes two arguments,
+  the text field element and an array of possible autocompleted values:*/
+  var currentFocus;
+  /*execute a function when someone writes in the text field:*/
+  inp.addEventListener("input", function(e) {
+      var a, b, i, val = this.value;
+      /*close any already open lists of autocompleted values*/
+      closeAllLists();
+      if (!val) { return false;}
+      currentFocus = -1;
+      /*create a DIV element that will contain the items (values):*/
+      a = document.createElement("DIV");
+      a.setAttribute("id", this.id + "autocomplete-list");
+      a.setAttribute("class", "autocomplete-items");
+      /*append the DIV element as a child of the autocomplete container:*/
+      this.parentNode.appendChild(a);
+      /*for each item in the array...*/
+      for (i = 0; i < arr.length; i++) {
+        /*check if the item starts with the same letters as the text field value:*/
+        if (arr[i].substr(0, val.length).toUpperCase() == val.toUpperCase()) {
+          /*create a DIV element for each matching element:*/
+          b = document.createElement("DIV");
+          /*make the matching letters bold:*/
+          b.innerHTML = "<strong>" + arr[i].substr(0, val.length) + "</strong>";
+          b.innerHTML += arr[i].substr(val.length);
+          /*insert a input field that will hold the current array item's value:*/
+          b.innerHTML += "<input type='hidden' value='" + arr[i] + "'>";
+          /*execute a function when someone clicks on the item value (DIV element):*/
+              b.addEventListener("click", function(e) {
+              /*insert the value for the autocomplete text field:*/
+              inp.value = this.getElementsByTagName("input")[0].value;
+              query();
+              /*close the list of autocompleted values,
+              (or any other open lists of autocompleted values:*/
+              closeAllLists();
+          });
+          a.appendChild(b);
+        }
+      }
+  });
+  inp.addEventListener("focus", function(e) {
+      var a, b, i, val = this.value;
+      /*close any already open lists of autocompleted values*/
+      closeAllLists();
+      currentFocus = -1;
+      /*create a DIV element that will contain the items (values):*/
+      a = document.createElement("DIV");
+      a.setAttribute("id", this.id + "autocomplete-list");
+      a.setAttribute("class", "autocomplete-items");
+      /*append the DIV element as a child of the autocomplete container:*/
+      this.parentNode.appendChild(a);
+      /*for each item in the array...*/
+      for (i = 0; i < arr.length; i++) {
+        /*check if the item starts with the same letters as the text field value:*/
+        if (arr[i].substr(0, val.length).toUpperCase() == val.toUpperCase()) {
+          /*create a DIV element for each matching element:*/
+          b = document.createElement("DIV");
+          /*make the matching letters bold:*/
+          b.innerHTML += arr[i].substr(val.length);
+          /*insert a input field that will hold the current array item's value:*/
+          b.innerHTML += "<input type='hidden' value='" + arr[i] + "'>";
+          /*execute a function when someone clicks on the item value (DIV element):*/
+              b.addEventListener("click", function(e) {
+              /*insert the value for the autocomplete text field:*/
+              inp.value = this.getElementsByTagName("input")[0].value;
+              /*close the list of autocompleted values,
+              (or any other open lists of autocompleted values:*/
+              query();
+              closeAllLists();
+          });
+          a.appendChild(b);
+        }
+      }
+  });
+
+  /*execute a function presses a key on the keyboard:*/
+  inp.addEventListener("keydown", function(e) {
+      var x = document.getElementById(this.id + "autocomplete-list");
+      if (x) x = x.getElementsByTagName("div");
+      if (e.keyCode == 40) {
+        /*If the arrow DOWN key is pressed,
+        increase the currentFocus variable:*/
+        currentFocus++;
+        /*and and make the current item more visible:*/
+        addActive(x);
+      } else if (e.keyCode == 38) { //up
+        /*If the arrow UP key is pressed,
+        decrease the currentFocus variable:*/
+        currentFocus--;
+        /*and and make the current item more visible:*/
+        addActive(x);
+      } else if (e.keyCode == 13) {
+        /*If the ENTER key is pressed, prevent the form from being submitted,*/
+        e.preventDefault();
+        if (currentFocus > -1) {
+          /*and simulate a click on the "active" item:*/
+          if (x) x[currentFocus].click();
+        }
+      }
+  });
+  function addActive(x) {
+    /*a function to classify an item as "active":*/
+    if (!x) return false;
+    /*start by removing the "active" class on all items:*/
+    removeActive(x);
+    if (currentFocus >= x.length) currentFocus = 0;
+    if (currentFocus < 0) currentFocus = (x.length - 1);
+    /*add class "autocomplete-active":*/
+    x[currentFocus].classList.add("autocomplete-active");
+  }
+  function removeActive(x) {
+    /*a function to remove the "active" class from all autocomplete items:*/
+    for (var i = 0; i < x.length; i++) {
+      x[i].classList.remove("autocomplete-active");
+    }
+  }
+  function closeAllLists(elmnt) {
+    /*close all autocomplete lists in the document,
+    except the one passed as an argument:*/
+    var x = document.getElementsByClassName("autocomplete-items");
+    for (var i = 0; i < x.length; i++) {
+      if (elmnt != x[i] && elmnt != inp) {
+      x[i].parentNode.removeChild(x[i]);
+    }
+    // query();
+  }
+}
+/*execute a function when someone clicks in the document:*/
+document.addEventListener("click", function (e) {
+    closeAllLists(e.target);
+});
+}
+
+fetch('/singers').then(async (response)=>{
+    singers = await response.json();
+    autocomplete(document.getElementById("singer"), singers);
+})
+
+function apply_hint(e) {
+    if (e.target.classList.contains('hints')) {return;}
+    e.target.parentNode.parentNode.parentNode.parentNode.querySelector('input').value += e.target.innerHTML.replace("[空格]", " ");
+}
+var hints = document.getElementsByClassName('hints');
+for (var i = 0; i < hints.length; i++) {
+    hints.item(i).addEventListener('click', apply_hint);
+}
+</script>
+
+</body>
+</html>

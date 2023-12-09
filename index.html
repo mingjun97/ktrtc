@@ -1,0 +1,92 @@
+<html>
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC webcam</title>
+    <style>
+    button {
+        padding: 8px 16px;
+    }
+
+    video {
+        width: 100%;
+    }
+
+    .option {
+        margin-bottom: 8px;
+    }
+
+    #media {
+        margin: auto;
+    }
+    .container {
+      width: 100vw;
+    }
+
+    .scaling-element {
+      height: 100%;
+      width: auto; /* This maintains the aspect ratio of the element */
+      display: block; /* Remove any default styling for inline elements */
+      margin: auto;
+    }
+    #float {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 10vh;
+        font-size: max(8vh, 50px);
+        color: rgba(255, 255, 255, 0.750);
+        z-index: 100;
+        /* -webkit-text-stroke: 0.01em black; */
+        text-shadow:#000 1px 0px 0.2em, #000 0 1px 0.2em, #000 -1px 0 0.2em, #000 0 -1px 0.2em;
+    }
+
+    .prompt {
+        position: fixed; height: 100vh; width: 100vw; top: 0; left: 0;
+        color: whitesmoke;
+        font-size: max(10vw, 50px);
+        pointer-events: none;
+    }
+    .prompt > div {
+        position: absolute;
+        left:50%;top:50%;transform: translate(-50%, -50%);
+        background-color: rgb(252 175 8 / 75%);
+        border-radius: 100px;
+        padding: 0.2em;
+        text-shadow:#000 1px 0px 0.2em, #000 0 1px 0.2em, #000 -1px 0 0.2em, #000 0 -1px 0.2em;
+        display: none;
+    }
+    </style>
+</head>
+<body style="background: black; overflow: hidden; margin: 0px;">
+<!-- 
+<div class="option">
+    <input id="use-stun" type="checkbox"/>
+    <label for="use-stun">Use STUN server</label>
+</div>
+<button id="start" onclick="start()">Start</button>
+<button id="stop" style="display: none" onclick="stop()">Stop</button> -->
+<div id="float">
+    <marquee behavior="scroll" direction="left" id="marquee"></marquee>
+</div>
+<div id="media" onclick="start()">
+    <audio id="audio" autoplay="true"></audio>
+    <div class="container">
+        <video id="video" autoplay="true" playsinline="true" class="scaling-element"></video>
+    </div>
+</div>
+
+<div class="prompt">
+    <div id="vocal">原/伴唱</div>
+    <div id="skip">切歌</div>
+    <div id="replay">重播</div>
+</div>
+<script src="client.js"></script>
+<script>
+    // (function (){
+        // setTimeout(start, 2000);
+    // }) ();
+</script>
+</body>
+</html>
