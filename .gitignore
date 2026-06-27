@@ -2,3 +2,12 @@
 db.sqlite*
 **/pretrained_models/
 __pycache__
+# media / test artifacts
+*.mp4
+*.lrc
+# python
+.venv/
+*.pyc
+# editor / local tooling
+.DS_Store
+.claude/

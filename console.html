@@ -1,572 +1,1718 @@
 <!DOCTYPE html>
+<!--
+  KORTC — Song Pick console (redesigned interaction model)
+  ---------------------------------------------------------------------------
+  Single-file, no build step. React 18 + htm (JSX-like) loaded from esm.sh so
+  the existing aiohttp backend can serve it at /console with zero changes.
+
+  Interaction model (redesigned, not a 1:1 port of the old two-tab console):
+    * No tabs. One "Browse" screen is always shown.
+    * The queue is always present: a pinned mini-player (mobile) that expands
+      into a full player/queue sheet, or a persistent side "Stage" panel
+      (tablet/desktop). You never switch away to see what's playing.
+    * Strong visual cues: numbered line positions (#1, #2 ...), add-feedback
+      that shows where the song landed, a pulsing queue badge, labeled
+      actions ("Play next" / "Remove") instead of cryptic icons, animated
+      now-playing, and guided empty states.
+
+  Backend contract (unchanged):
+    POST /op      query | add | top | remove | skip | replay
+    GET  /vocal   toggle vocal/accompaniment -> "True" | "False"
+    GET  /singers -> ["singer", ...]
+    GET  /i18n-{lang}.json
+    WS   /ws      live queue: [[id,name,singer,file], ...] (idx 0 = now playing)
+-->
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
-  <title>Console</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#6d28d9" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>KORTC</title>
   <style>
+    :root {
+      --bg: #f4f5fb; --bg-2: #eceef7;
+      --surface: #ffffff; --surface-2: #f6f7fc;
+      --text: #16161d; --text-dim: #6b7280; --text-faint: #9aa1ad;
+      --border: #ececf2;
+      --accent: #6d28d9; --accent-2: #db2777; --accent-soft: rgba(109,40,217,0.10);
+      --good: #10b981; --danger: #ef4444;
+      --radius: 18px; --radius-sm: 13px;
+      --shadow: 0 6px 24px rgba(20,16,40,0.08);
+      --shadow-lg: 0 18px 48px rgba(20,16,40,0.20);
+      --rail: 88px; --stage-w: 400px;
+      --grad: linear-gradient(135deg, #7c3aed 0%, #6d28d9 42%, #db2777 100%);
+      --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom);
+      --sal: env(safe-area-inset-left); --sar: env(safe-area-inset-right);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0e0e14; --bg-2: #14141d;
+        --surface: #1a1a24; --surface-2: #20202c;
+        --text: #f3f3f7; --text-dim: #a4a8b4; --text-faint: #6c707d;
+        --border: #282834;
+        --accent: #a78bfa; --accent-2: #f472b6; --accent-soft: rgba(167,139,250,0.15);
+        --shadow: 0 6px 24px rgba(0,0,0,0.4); --shadow-lg: 0 18px 48px rgba(0,0,0,0.6);
+      }
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html { height: 100%; }
+    /* Mobile uses document-level scrolling (no fixed shell) so iOS Safari can
+       auto-hide its address bar on scroll. The desktop media query below
+       restores the locked 100dvh shell with inner scroll panes. */
     body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
+      margin: 0; background: var(--bg); color: var(--text); min-height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased; overflow-x: hidden;
     }
+    #root { min-height: 100%; }
+    button { font-family: inherit; }
 
-    .tab-container 
-    {
-   position:fixed;
-   left:0px;
-   bottom:0px;
-   height:50px;
-   width:100%;
-   background:#999;
-   display: flex;
-   z-index: 100;
-}
+    /* ---------------- shell ---------------- */
+    .app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
 
-    /* {
-        display: flex;
-        position: fixed;
-        width: 100vw;
-        top: calc(80vh - env(safe-area-inset-bottom));
-        z-index: 100;
-    } */
+    .topbar {
+      position: relative; z-index: 30; display: flex; align-items: center; gap: 12px;
+      padding: calc(var(--sat) + 13px) 16px 13px calc(var(--sal) + 16px);
+      background: var(--grad); color: #fff;
+      box-shadow: 0 4px 20px rgba(109,40,217,0.25);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; letter-spacing: 0.3px; }
+    .brand .logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+      background: rgba(255,255,255,0.18); font-size: 18px; }
+    .brand .sub { font-size: 11.5px; font-weight: 500; opacity: 0.82; margin-top: 1px; }
+    .topbar .spacer { flex: 1; }
+    .icon-btn {
+      border: none; cursor: pointer; width: 40px; height: 40px; border-radius: 12px;
+      background: rgba(255,255,255,0.16); color: #fff; font-size: 18px; display: grid; place-items: center;
+      transition: background 0.2s ease, transform 0.1s ease;
+    }
+    .icon-btn:hover { background: rgba(255,255,255,0.28); }
+    .icon-btn:active { transform: scale(0.92); }
 
-    .tab {
-      cursor: pointer;
-      padding: 10px 20px;
-      background-color: #eee;
-      border: 1px solid #ccc;
-      flex: 1;
-      display: flex;
-      height: 20px;
-      margin: 1px;
-      border-radius: 5px;
-    }
+    .content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-    .tab:hover {
-      background-color: #ddd;
-    }
+    /* browse column — grows with content (document scroll) on mobile.
+       Bottom padding only clears the mini-player pill (not the whole dock), so
+       the list flows down under the dock's gradient fade toward the address bar. */
+    .browse { flex: 1; min-height: 0;
+      padding: 16px calc(var(--sal) + 16px) calc(var(--sab) + 86px) calc(var(--sar) + 16px); }
 
-    .tab-content {
-      display: none;
-      text-align: center;
+    /* ---------------- search ---------------- */
+    .search-head { position: sticky; top: -16px; z-index: 12;
+      margin: -16px -4px 14px; padding: 16px 4px 12px;
+      background: linear-gradient(var(--bg) 80%, transparent); }
+    .search-fields { display: flex; flex-direction: column; gap: 10px; }
+    .field { position: relative; }
+    .field .fi { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--text-faint); pointer-events: none; }
+    .field input {
+      width: 100%; height: 52px; padding: 0 44px 0 42px;
+      border: 1.5px solid var(--border); border-radius: 14px; background: var(--surface);
+      color: var(--text); font-size: 16px; outline: none;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
+    .field input::placeholder { color: var(--text-faint); }
+    .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .field .clear-x { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      width: 30px; height: 30px; border: none; cursor: pointer; border-radius: 50%;
+      background: var(--surface-2); color: var(--text-dim); font-size: 14px; display: grid; place-items: center; }
+    .ac-list { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 40;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      box-shadow: var(--shadow-lg); max-height: 46vh; overflow-y: auto; padding: 6px; }
+    .ac-item { padding: 11px 12px; border-radius: 10px; cursor: pointer; font-size: 15px; color: var(--text);
+      display: flex; align-items: center; gap: 10px; }
+    .ac-item:hover { background: var(--accent-soft); color: var(--accent); }
+    .ac-item .fi { font-size: 14px; color: var(--text-faint); }
+    .toolbar { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    .chip { border: 1.5px solid var(--border); cursor: pointer; background: var(--surface); color: var(--text-dim);
+      height: 38px; border-radius: 19px; padding: 0 14px; font-size: 13.5px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s ease; }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip:active { transform: scale(0.96); }
 
+    /* category switcher (Songs / Singers / YouTube) */
+    .seg { display: flex; gap: 4px; background: var(--surface-2); border-radius: 14px; padding: 4px; margin-bottom: 14px; }
+    .seg button { flex: 1; border: none; background: none; cursor: pointer; height: 42px; border-radius: 11px;
+      font-size: 13.5px; font-weight: 700; color: var(--text-dim); display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      transition: background 0.2s ease, color 0.2s ease; }
+    .seg button .si { font-size: 16px; }
+    .seg button.active { background: var(--surface); color: var(--accent); box-shadow: var(--shadow); }
+    @media (max-width: 380px) { .seg button .sl { display: none; } }
 
-    .tab.active {
-        background-color: lightblue;
-    }
+    /* breadcrumb when viewing a singer's songs */
+    .crumb { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .back-chip { border: 1.5px solid var(--border); background: var(--surface); color: var(--text-dim); cursor: pointer;
+      height: 42px; border-radius: 21px; padding: 0 16px; font-size: 14px; font-weight: 700;
+      display: inline-flex; align-items: center; gap: 6px; flex: none; transition: all 0.2s ease; }
+    .back-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .crumb .crumb-name { font-size: 17px; font-weight: 800; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    #counter {
-        background-color: orange;
-        border-radius: 10px;
-        height: 20px;
-        width: 20px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    
-    .song_list {
-        margin-top: 30px;
-        padding-bottom: 200px;
-    }
+    /* YouTube affordances */
+    .yt-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 800; color: #fff;
+      background: #f00; padding: 1px 6px; border-radius: 6px; margin-left: 7px; vertical-align: middle; }
+    .chev { flex: none; color: var(--text-faint); font-size: 22px; line-height: 1; }
+    .cta { border: none; cursor: pointer; width: 100%; border-radius: 16px; padding: 16px; font-size: 15px; font-weight: 800; color: #fff;
+      background: linear-gradient(135deg, #ff4d4d, #e60000); box-shadow: 0 8px 24px rgba(230,0,0,0.30);
+      display: inline-flex; align-items: center; justify-content: center; gap: 10px; transition: transform 0.1s ease; }
+    .cta:active { transform: scale(0.97); }
+    .cta .yi { font-size: 20px; }
+    .singer-hint { text-align: center; color: var(--text-faint); font-size: 12.5px; padding: 12px; }
 
-    .song_list > div{
-        margin: 2px;
-        display: flex;
-        min-height: 50px;
-        align-items: center;
-        justify-content: space-between;
-    }
+    /* singer picker — grid of avatar cards */
+    .singer-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 12px; }
+    .singer-card { display: flex; flex-direction: column; align-items: center; gap: 9px;
+      padding: 14px 6px; border-radius: 16px; background: var(--surface); box-shadow: var(--shadow);
+      cursor: pointer; transition: transform 0.12s ease, box-shadow 0.2s ease; animation: rowIn 0.28s ease both; }
+    .singer-card:hover { box-shadow: var(--shadow-lg); }
+    .singer-card:active { transform: scale(0.95); }
+    .sg-avatar { width: 60px; height: 60px; border-radius: 50%; overflow: hidden; display: grid; place-items: center;
+      color: #fff; font-size: 24px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15); }
+    .sg-name { width: 100%; text-align: center; font-size: 13px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    @media screen and (min-width: 768px) { .singer-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 14px; } .sg-avatar { width: 72px; height: 72px; } }
 
-    .control-group {
-        display: flex;
-        min-width: 80px;
-        justify-content: space-around;
-    }
+    /* search header shrinks as you scroll down for a tighter layout */
+    .search-head .field input, .search-head .seg, .search-head .seg button {
+      transition: height 0.22s ease, padding 0.22s ease, margin 0.22s ease, font-size 0.22s ease; }
+    .search-head.compact { padding-top: 10px; padding-bottom: 6px; }
+    .search-head.compact .seg { margin-bottom: 9px; padding: 3px; }
+    .search-head.compact .seg button { height: 34px; font-size: 12.5px; }
+    .search-head.compact .seg button .si { font-size: 14px; }
+    .search-head.compact .search-fields { gap: 8px; }
+    .search-head.compact .field input { height: 42px; font-size: 15px; }
 
-    .control-group >div {
-        height: 45px;
-        width: 45px;
-        border-radius: 25px;
-        background-color: lightcyan;
-        line-height: 45px;
-        font-weight: bold;
-        font-size: 45px;
-        color: pink;
-        transition: all 0.5s ease-in-out;
-        overflow: hidden;
-        position: relative;
-    }
+    .section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-faint); margin: 4px 4px 12px; }
+    .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
 
-    .song_list > div:nth-child(2n+1){
-        background-color: #ccc;
-    }
-    
-    .song_list.playing > div:first-child{
-        background-color: lightgreen;
-    }
+    .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+      border-bottom: 1px solid var(--border); animation: rowIn 0.28s ease both; }
+    .row:last-child { border-bottom: none; }
+    @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-    .control {
-        position: fixed;
-        bottom: 50px;
-        display: flex;
-    }
+    .thumb { flex: none; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center;
+      color: #fff; font-size: 18px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15); }
+    /* real artist/album artwork fills the placeholder; emoji shows underneath until it loads */
+    .thumb, .np .np-art, .mini .m-art { overflow: hidden; }
+    .av-img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; animation: avIn 0.35s ease; }
+    @keyframes avIn { from { opacity: 0; } to { opacity: 1; } }
+    .meta { min-width: 0; flex: 1; }
+    .meta .name { font-size: 15.5px; font-weight: 650; color: var(--text); display: flex; align-items: center; gap: 6px; min-width: 0; }
+    /* marquee: long titles float left and right so they can be read in full */
+    .mq { flex: 1 1 auto; min-width: 0; display: block; overflow: hidden; white-space: nowrap; }
+    .mq-i { display: inline-block; white-space: nowrap; }
+    .mq-i.run { animation: marquee var(--mq) ease-in-out infinite alternate; will-change: transform; }
+    @keyframes marquee { 0%, 16% { transform: translateX(0); } 84%, 100% { transform: translateX(var(--shift)); } }
+    @media (prefers-reduced-motion: reduce) { .mq-i.run { animation: none; } }
+    .meta .singer { font-size: 13px; color: var(--text-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    .control > div {
-        height: 60px;
-        width: 60px;
-        border-radius: 25px;
-        background-color: rgba(52, 127, 231, 0.787);
-        margin: 5px;
-        color: white;
-        line-height: 60px;
-    }
+    /* add button + queued-position state */
+    .add-btn { flex: none; border: none; cursor: pointer; height: 38px; min-width: 84px; border-radius: 19px; padding: 0 16px;
+      font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      background: var(--accent); color: #fff; transition: transform 0.1s ease, background 0.2s ease; }
+    .add-btn:active { transform: scale(0.92); }
+    .add-btn.queued { background: var(--accent-soft); color: var(--accent); cursor: default; }
+    .add-btn.playing-now { background: rgba(16,185,129,0.14); color: var(--good); cursor: default; }
+    .pos-badge { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px;
+      border-radius: 11px; background: currentColor; font-size: 12.5px; font-weight: 800; }
+    .pos-badge span { color: var(--surface); }
 
-    form {
-      max-width: 400px;
-      margin: 0 auto;
-      background-color: #fff;
-      padding: 20px;
-      border-radius: 8px;
-      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-    }
+    /* ---------------- stage (now playing + queue) ---------------- */
+    .stage { display: flex; flex-direction: column; min-height: 0; }
+    /* the fixed parts never shrink — only the up-next list absorbs space, so a
+       long queue can't squeeze/clip the now-playing card */
+    .stage > .np, .stage > .controls, .stage > .section-title { flex-shrink: 0; }
+    .np { position: relative; border-radius: var(--radius); padding: 20px; color: #fff;
+      box-shadow: var(--shadow-lg); overflow: hidden; background: var(--grad); }
+    .np::after { content: ""; position: absolute; inset: 0;
+      background: radial-gradient(120% 90% at 100% 0%, rgba(255,255,255,0.25), transparent 60%); pointer-events: none; }
+    .np .np-tag { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1px; opacity: 0.92; margin-bottom: 12px; }
+    .np .np-row { display: flex; align-items: center; gap: 16px; position: relative; z-index: 1; }
+    .np .np-art { flex: none; width: 62px; height: 62px; border-radius: 16px; background: rgba(255,255,255,0.18); display: grid; place-items: center; font-size: 27px; }
+    .np .np-name { font-size: 21px; font-weight: 800; line-height: 1.2; word-break: break-word; }
+    .np .np-singer { font-size: 14px; opacity: 0.88; margin-top: 4px; }
 
-    label {
-      display: block;
-      margin-bottom: 8px;
-    }
+    .eq { display: inline-flex; align-items: flex-end; gap: 3px; height: 15px; }
+    .eq i { width: 3px; background: currentColor; border-radius: 2px; animation: eq 0.9s ease-in-out infinite; }
+    .eq i:nth-child(1){ height: 40%; animation-delay: -0.4s; }
+    .eq i:nth-child(2){ height: 90%; animation-delay: -0.2s; }
+    .eq i:nth-child(3){ height: 60%; animation-delay: -0.6s; }
+    .eq i:nth-child(4){ height: 100%; animation-delay: 0s; }
+    @keyframes eq { 0%,100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+    @media (prefers-reduced-motion: reduce) { .eq i { animation: none; } }
 
-    input {
-      width: 100%;
-      padding: 8px;
-      margin-bottom: 16px;
-      box-sizing: border-box;
-      display: inline-block;
-    }
+    /* control cluster */
+    .controls { display: flex; gap: 10px; margin-top: 14px; }
+    .ctl { flex: 1; border: none; cursor: pointer; height: 56px; border-radius: 15px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      background: var(--surface-2); color: var(--text); transition: transform 0.1s ease, background 0.2s ease, color 0.2s ease; }
+    .ctl .ci { font-size: 19px; }
+    .ctl .cl { font-size: 11px; font-weight: 600; opacity: 0.85; }
+    .ctl:active { transform: scale(0.95); }
+    .ctl:disabled { opacity: 0.4; cursor: default; }
+    .ctl.warn { background: rgba(239,68,68,0.12); color: var(--danger); }
+    .ctl.on { background: var(--good); color: #fff; }
 
+    /* up-next list: a non-scrolling zone that clips the scroller + the end label */
+    .upnext-zone { flex: 1; min-height: 0; margin-top: 18px; position: relative; overflow: hidden;
+      display: flex; flex-direction: column; }
+    .upnext { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      /* kill the native rubber-band so a fast fling just clamps (no stuck overscroll) */
+      overscroll-behavior: none; }
+    /* hide the scroll indicator while overscrolling (during the reveal) */
+    .upnext.overscrolling { scrollbar-width: none; -ms-overflow-style: none; }
+    .upnext.overscrolling::-webkit-scrollbar { width: 0; height: 0; display: none; }
+    .upnext-content { min-height: 100%; }
+    /* "end of list" is anchored to the non-scrolling ZONE (a sibling of the
+       scroller), parked below the viewport. Since it's outside the scroller it
+       never adds to scrollHeight — native scroll can't reach it; only the
+       rubber-band pull slides it (and the content) into view. */
+    .upnext-end { position: absolute; left: 0; right: 0; bottom: 0; height: 52px;
+      transform: translateY(52px); background: var(--bg); z-index: 1;
+      display: flex; align-items: center; justify-content: center; gap: 10px; pointer-events: none;
+      color: var(--text-faint); font-size: 12px; font-weight: 600; letter-spacing: 0.3px; }
+    .upnext-end::before, .upnext-end::after { content: ""; width: 22px; height: 1px; background: var(--border); }
+    .q-row { display: flex; align-items: center; gap: 12px; padding: 11px 6px; border-bottom: 1px solid var(--border);
+      animation: rowIn 0.28s ease both; }
+    .q-row:last-child { border-bottom: none; }
+    .q-pos { flex: none; width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center;
+      background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 15px; }
+    .q-actions { display: flex; gap: 6px; }
+    .q-btn { border: none; cursor: pointer; height: 34px; border-radius: 11px; padding: 0 11px; font-size: 12.5px; font-weight: 700;
+      display: inline-flex; align-items: center; gap: 5px; background: var(--surface-2); color: var(--text-dim);
+      transition: transform 0.1s ease, background 0.2s ease, color 0.2s ease; }
+    .q-btn:hover { background: var(--accent-soft); color: var(--accent); }
+    .q-btn.danger:hover { background: rgba(239,68,68,0.12); color: var(--danger); }
+    .q-btn:active { transform: scale(0.93); }
+    .q-btn .ql { }
+    @media (max-width: 420px) { .q-btn .ql { display: none; } .q-btn { padding: 0 10px; } }
 
-    .control-group > div:after {
-        content: "";
-        background: #514576;
-        display: block;
-        position: absolute;
-        padding-top: 300%;
-        padding-left: 350%;
-        margin-left: -20px!important;
-        margin-top: -120%;
-        opacity: 0;
-        transition: all 0.8s
+    /* ---------------- mini player (mobile) ---------------- */
+    /* Fixed bottom dock: fades page content out behind the floating pill and
+       reserves the safe-area inset so nothing hides under the home indicator /
+       Safari toolbar. Only the pill is interactive; taps pass through the fade. */
+    .mini-dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35;
+      padding: 24px 10px calc(var(--sab) + 10px);
+      /* light fade so the list stays visible flowing down toward the address bar,
+         while the glass pill (which blurs whatever is behind it) still stands out */
+      background: linear-gradient(to top, var(--bg) 34%, transparent);
+      pointer-events: none; }
+    /* Liquid-glass mini-player with an animated glowing accent outline. */
+    .mini { position: relative; pointer-events: auto;
+      display: flex; align-items: center; gap: 12px; padding: 11px 13px;
+      border-radius: 22px; cursor: pointer; overflow: visible;
+      /* frosted translucent fill + top specular sheen */
+      background:
+        linear-gradient(135deg, rgba(255,255,255,0.26), rgba(255,255,255,0.05) 55%),
+        color-mix(in srgb, var(--surface) 55%, transparent);
+      backdrop-filter: blur(22px) saturate(185%);
+      -webkit-backdrop-filter: blur(22px) saturate(185%);
+      border: 1px solid rgba(255,255,255,0.30);
+      animation: miniGlow 3.2s ease-in-out infinite;
+      transition: transform 0.18s ease; }
+    /* gradient ring drawn with a masked border so the outline itself is colorful */
+    .mini::before { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2) 50%, var(--accent));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+      pointer-events: none; opacity: 0.85; }
+    .mini > * { position: relative; z-index: 1; }
+    .mini:active { transform: scale(0.985); }
+    .mini.bump { animation: bump 0.5s ease, miniGlow 3.2s ease-in-out infinite; }
+    @keyframes bump { 0%,100% { transform: none; } 30% { transform: translateY(-5px) scale(1.01); } }
+    /* the panel collapses into the pill: a clean slide-up from below (no bounce) */
+    .mini.minimizing { animation: miniMinimize 0.36s cubic-bezier(0.16,1,0.3,1), miniGlow 3.2s ease-in-out infinite; }
+    @keyframes miniMinimize {
+      from { transform: translateY(115%); opacity: 0.6; }
+      to   { transform: none; opacity: 1; }
     }
+    /* breathing outer glow in the brand colors */
+    @keyframes miniGlow {
+      0%,100% { box-shadow: 0 0 16px rgba(124,58,237,0.40), 0 0 2px rgba(124,58,237,0.5),
+                  0 10px 32px rgba(20,16,40,0.22), inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -10px 22px rgba(255,255,255,0.05); }
+      50%     { box-shadow: 0 0 32px rgba(219,39,119,0.48), 0 0 3px rgba(219,39,119,0.55),
+                  0 12px 38px rgba(20,16,40,0.24), inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -10px 22px rgba(255,255,255,0.05); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .mini { animation: none;
+        box-shadow: 0 0 22px rgba(124,58,237,0.40), 0 10px 32px rgba(20,16,40,0.22), inset 0 1px 0 rgba(255,255,255,0.55); }
+      .mini.bump { animation: none; }
+    }
+    .mini .m-art { flex: none; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; color: #fff; font-size: 19px; }
+    .mini .m-meta { flex: 1; min-width: 0; }
+    .mini .m-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--accent);
+      display: flex; align-items: center; gap: 5px; }
+    .mini .m-name { font-size: 14.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+    .mini .m-next { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mini .m-count { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 14px;
+      background: var(--accent); color: #fff; font-weight: 800; font-size: 14px; }
+    .mini .m-count.empty { background: var(--surface-2); color: var(--text-faint); }
+    .mini .m-count .cc-num.bump { animation: pop 0.5s ease; }
+    @keyframes pop { 0%,100% { transform: scale(1); } 40% { transform: scale(1.5); } }
 
-    .control-group > div:active:after {
-    padding: 0;
-    margin: 0;
-    opacity: 1;
-    transition: 0s
-    }
+    /* ---------------- player sheet (mobile expanded) ---------------- */
+    .sheet-wrap { position: fixed; inset: 0; z-index: 50; display: none; }
+    .sheet-wrap.open { display: block; }
+    .sheet-scrim { position: absolute; inset: 0; background: rgba(8,8,14,0.5); animation: fade 0.25s ease both; }
+    .sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 92vh;
+      background: var(--bg); border-radius: 24px 24px 0 0; box-shadow: var(--shadow-lg);
+      padding: 0 16px calc(var(--sab) + 18px); display: flex; flex-direction: column;
+      /* 'backwards' (not 'both'): the open slide still plays, but the animation
+         does NOT retain transform afterwards — otherwise its filled value would
+         override the inline transform used for drag/close, freezing the panel. */
+      animation: slideUp 0.3s cubic-bezier(0.2,0.8,0.2,1) backwards;
+      transition: transform 0.3s cubic-bezier(0.2,0.8,0.2,1); }
+    .sheet.dragging { transition: none; }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: none; } }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    /* generous, grabbable handle zone so users can swipe the sheet down to close */
+    .grab-zone { flex: none; padding: 12px 0; display: flex; flex-direction: column; align-items: center;
+      cursor: grab; touch-action: none; }
+    .grab-zone:active { cursor: grabbing; }
+    .grabber { width: 42px; height: 5px; border-radius: 3px; background: var(--text-faint); opacity: 0.5;
+      animation: grabPulse 2.6s ease-in-out infinite;
+      transition: width 0.2s ease, background 0.2s ease, opacity 0.2s ease; }
+    @keyframes grabPulse { 0%,100% { width: 42px; opacity: 0.45; } 50% { width: 54px; opacity: 0.7; } }
+    .sheet.dragging .grabber { animation: none; width: 56px; background: var(--accent); opacity: 0.95; }
+    .sheet.will-close .grabber { background: var(--good); }
 
-    .autocomplete {
-        /*the container must be positioned relative:*/
-        position: relative;
-        display: inline-block;
-    }
-    .autocomplete-items {
-        position: absolute;
-        border: 1px solid #d4d4d4;
-        border-bottom: none;
-        border-top: none;
-        z-index: 99;
-        /*position the autocomplete items to be the same width as the container:*/
-        top: 100%;
-        left: 0;
-        right: 0;
-        max-height: 60vh;
-        overflow: scroll;
-    }
-    .autocomplete-items div {
-        padding: 10px;
-        cursor: pointer;
-        background-color: #fff;
-        border-bottom: 1px solid #d4d4d4;
-    }
-    .autocomplete-items div:hover {
-    /*when hovering an item:*/
-        background-color: #e9e9e9;
-    }
-    .autocomplete-active {
-    /*when navigating through the items using the arrow keys:*/
-        background-color: DodgerBlue !important;
-        color: #ffffff;
-    }
+    /* ---------------- desktop stage panel ---------------- */
+    .stage-panel { display: none; }
 
+    /* ---------------- empty / loader / pager ---------------- */
+    .empty { text-align: center; color: var(--text-faint); padding: 48px 20px;
+      display: flex; flex-direction: column; align-items: center; gap: 10px; }
+    .empty .em-ic { font-size: 44px; opacity: 0.75; }
+    .empty .em-t { font-size: 15px; font-weight: 600; color: var(--text-dim); }
+    .empty .em-s { font-size: 13px; max-width: 260px; }
+    .loader { display: flex; justify-content: center; padding: 22px; }
+    .spinner { width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--accent-soft); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* "you've reached the end" divider at the bottom of a fully-loaded list.
+       margin-bottom keeps it clear of the floating mini-player dock. */
+    .list-end { display: flex; align-items: center; justify-content: center; gap: 12px;
+      padding: 24px 8px 10px; margin-bottom: 56px; color: var(--text-dim);
+      font-size: 12.5px; font-weight: 700; letter-spacing: 0.3px; animation: rowIn 0.3s ease both; }
+    .list-end::before, .list-end::after { content: ""; height: 1px; width: 32px; border-radius: 1px; background: var(--border); }
+    @media screen and (min-width: 860px) { .list-end { margin-bottom: 8px; } }
+
+    /* ---------------- toasts ---------------- */
+    .toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--sab) + 88px); z-index: 60;
+      display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; width: max-content; max-width: 92vw; }
+    .toast { background: #15151d; color: #fff; padding: 11px 18px; border-radius: 14px; font-size: 14px; font-weight: 600;
+      box-shadow: var(--shadow-lg); display: flex; align-items: center; gap: 9px; animation: toastIn 0.25s ease both; }
+    .toast.good { background: var(--good); } .toast.warn { background: var(--danger); }
+    @keyframes toastIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+    /* ---------------- overlays (confirm / yt / lang) ---------------- */
+    .overlay { position: fixed; inset: 0; z-index: 80; background: rgba(8,8,14,0.55); backdrop-filter: blur(4px);
+      display: grid; place-items: center; padding: 20px; animation: fade 0.2s ease both; }
+    .dialog { width: 100%; max-width: 360px; background: var(--surface); border-radius: 20px; box-shadow: var(--shadow-lg);
+      padding: 24px; text-align: center; animation: popin 0.22s ease both; }
+    @keyframes popin { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+    .dialog .dg-ic { font-size: 38px; margin-bottom: 8px; }
+    .dialog h3 { margin: 0 0 6px; font-size: 18px; } .dialog p { margin: 0 0 20px; color: var(--text-dim); font-size: 14px; }
+    .dg-actions { display: flex; gap: 10px; }
+    .dg-actions button { flex: 1; height: 46px; border-radius: 14px; border: none; cursor: pointer; font-size: 15px; font-weight: 700; }
+    .dg-cancel { background: var(--surface-2); color: var(--text); }
+    .dg-ok { background: var(--accent); color: #fff; } .dg-ok.danger { background: var(--danger); }
+
+    .yt-modal { width: 100%; max-width: 600px; height: min(88vh, 760px); background: var(--surface); border-radius: 20px;
+      overflow: hidden; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; animation: popin 0.22s ease both; }
+    .yt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); font-weight: 700; }
+    .yt-head .spacer { flex: 1; }
+    .yt-modal iframe { flex: 1; width: 100%; border: none; }
+    /* add-from-youtube flow */
+    .yt-flow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .cta:disabled { opacity: 0.55; box-shadow: none; cursor: default; }
+    .yt-tabs { padding: 12px 16px 0; }
+    .yt-tabs .seg { margin-bottom: 0; }
+    .yt-tabs .seg .tab-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent);
+      color: #fff; font-size: 11px; font-weight: 800; display: inline-grid; place-items: center; margin-left: 4px; }
+    .yt-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 18px 18px 28px; }
+    .yt-form { max-width: 540px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .yt-help { color: var(--text-faint); font-size: 13px; text-align: center; line-height: 1.5; }
+    .yt-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+      padding: 60px 20px; color: var(--text-dim); font-size: 14.5px; font-weight: 600; }
+    .yt-thumb { position: relative; border-radius: 14px; overflow: hidden; aspect-ratio: 16 / 9; background: var(--surface-2);
+      box-shadow: var(--shadow); }
+    .yt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .yt-thumb .yt-dur { position: absolute; right: 8px; bottom: 8px; background: rgba(0,0,0,0.78); color: #fff;
+      font-size: 12px; font-weight: 800; padding: 2px 7px; border-radius: 6px; letter-spacing: 0.3px; }
+    .yt-thumb .yt-change { position: absolute; left: 8px; top: 8px; border: none; cursor: pointer; border-radius: 18px;
+      background: rgba(8,8,14,0.62); color: #fff; font-size: 12px; font-weight: 700; padding: 6px 12px; backdrop-filter: blur(4px); }
+    .yt-field-wrap { display: block; }
+    /* multiline song-title box (auto-grows to show the full title) */
+    .field textarea.yt-ta { width: 100%; min-height: 52px; max-height: 220px; box-sizing: border-box;
+      padding: 14px 44px 13px 42px; border: 1.5px solid var(--border); border-radius: 14px; background: var(--surface);
+      color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.45; outline: none; resize: none;
+      overflow-y: auto; display: block; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+    .field textarea.yt-ta::placeholder { color: var(--text-faint); }
+    .field textarea.yt-ta:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+    /* pin the icon + clear button to the first line instead of vertical-centering */
+    .field.ta-field .fi { top: 27px; }
+    .field.ta-field .clear-x { top: 11px; transform: none; }
+    .yt-label { font-size: 12.5px; font-weight: 800; color: var(--text-dim); margin-bottom: 7px; display: flex; align-items: center; gap: 7px; }
+    .yt-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+    .yt-chips .qf-label { font-size: 11.5px; font-weight: 700; color: var(--text-faint); align-self: center; margin-right: 1px; }
+    .yt-chip { border: 1px solid var(--border); background: var(--surface); color: var(--text-dim); cursor: pointer; height: 30px;
+      border-radius: 15px; padding: 0 11px; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.12s ease;
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: pan-y; }
+    .yt-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .yt-chip:active { transform: scale(0.95); }
+    /* a chip the swipe-select stroke has just picked up (iOS-Photos style) */
+    .yt-chip.picked { border-color: var(--accent); background: var(--accent); color: #fff; transform: scale(1.06); box-shadow: 0 4px 12px var(--accent-soft); }
+    /* song summary inside the double-check dialog */
+    .yt-dbl-preview { text-align: left; background: var(--surface-2); border-radius: 12px; padding: 12px 14px; margin: 0 0 20px; display: flex; flex-direction: column; gap: 8px; }
+    .yt-dbl-preview > div { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 700; color: var(--text); min-width: 0; }
+    .yt-dbl-preview > div span { font-size: 14px; flex: none; }
+    .yt-select { width: 100%; height: 48px; border: 1.5px solid var(--border); border-radius: 14px; background: var(--surface);
+      color: var(--text); font-size: 15px; padding: 0 14px; outline: none; appearance: none; cursor: pointer;
+      background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%), linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+      background-position: calc(100% - 18px) 21px, calc(100% - 13px) 21px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+    .yt-select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .yt-actions { display: flex; gap: 10px; margin-top: 4px; }
+    .yt-actions button { height: 50px; border-radius: 14px; border: none; cursor: pointer; font-size: 15px; font-weight: 800;
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform 0.1s ease; }
+    .yt-actions button:active { transform: scale(0.97); }
+    .yt-actions button:disabled { opacity: 0.6; cursor: default; }
+    .yt-submit { flex: 1; background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; box-shadow: 0 8px 22px rgba(22,163,74,0.28); }
+    .yt-reset { flex: 0 0 104px; background: var(--surface-2); color: var(--text); }
+    .yt-err { color: var(--danger); font-size: 13.5px; font-weight: 600; text-align: center;
+      background: rgba(239,68,68,0.09); padding: 11px 12px; border-radius: 12px; }
+    .btn-spin { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid rgba(255,255,255,0.45); border-top-color: #fff; animation: spin 0.8s linear infinite; }
+    .yt-list { display: flex; flex-direction: column; gap: 8px; max-width: 540px; margin: 0 auto; }
+    .yt-item { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-radius: 14px; background: var(--surface);
+      box-shadow: var(--shadow); animation: rowIn 0.28s ease both; }
+    .yt-it-main { flex: 1; min-width: 0; }
+    .yt-it-name { font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .yt-it-sub { font-size: 12px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .yt-pill { font-size: 11.5px; font-weight: 800; padding: 5px 11px; border-radius: 20px; white-space: nowrap; flex: none;
+      display: inline-flex; align-items: center; gap: 5px; }
+    .yt-pill.pending { background: var(--surface-2); color: var(--text-dim); }
+    .yt-pill.proc { background: var(--accent-soft); color: var(--accent); }
+    .yt-pill.proc .pdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: ppulse 1s ease-in-out infinite; }
+    .yt-pill.done { background: rgba(34,197,94,0.15); color: #16a34a; }
+    .yt-pill.err { background: rgba(239,68,68,0.12); color: var(--danger); }
+    @keyframes ppulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+    .lang-menu { position: absolute; top: calc(var(--sat) + 56px); right: 12px; z-index: 70; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 6px; min-width: 150px; animation: popin 0.18s ease both; }
+    .lang-menu button { width: 100%; text-align: left; border: none; background: none; cursor: pointer; padding: 11px 12px;
+      border-radius: 10px; font-size: 15px; color: var(--text); display: flex; align-items: center; gap: 10px; }
+    .lang-menu button:hover { background: var(--accent-soft); color: var(--accent); }
+    .lang-menu button.active { color: var(--accent); font-weight: 700; }
+
+    /* ---------------- responsive: tablet / desktop ---------------- */
+    @media screen and (min-width: 860px) {
+      /* restore the fixed app shell with internal scroll panes */
+      body { overflow: hidden; }
+      #root { height: 100%; }
+      .app { height: 100dvh; flex-direction: row; }
+      .topbar { flex-direction: column; width: var(--rail); padding: calc(var(--sat) + 18px) 8px 18px; gap: 18px;
+        box-shadow: 6px 0 24px rgba(109,40,217,0.18); }
+      .brand { flex-direction: column; gap: 7px; font-size: 12px; text-align: center; }
+      .brand .brand-text .sub { display: none; }
+      .topbar .spacer { flex: 1; }
+      .content { min-width: 0; flex-direction: row; }
+      .browse { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 26px 28px 40px; }
+      .mini-dock, .sheet-wrap { display: none !important; }
+      .stage-panel { display: flex; flex-direction: column; width: var(--stage-w); flex: none;
+        border-left: 1px solid var(--border); background: var(--bg-2);
+        padding: 24px 22px calc(var(--sab) + 24px); overflow: hidden; }
+      .stage-panel .upnext { padding-right: 2px; }
+      .lang-menu { top: auto; bottom: 18px; left: calc(var(--rail) + 10px); right: auto; }
+      .np .np-name { font-size: 22px; }
+    }
+    @media screen and (min-width: 1180px) {
+      .search-fields { flex-direction: row; } .search-fields .field { flex: 1; }
+      .browse { padding: 30px max(28px, calc((100% - 760px) / 2)) 40px; }
+      :root { --stage-w: 440px; }
+    }
   </style>
 </head>
 <body>
+  <div id="root"></div>
 
-<div class="tab-container">
-  <div class="tab active" onclick="openTab('search')">Search</div>
-  <div class="tab" onclick="openTab('list')">Control <div id="counter" >-</div></div>
+  <script type="module">
+    import React from 'https://esm.sh/react@18.3.1';
+    import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1';
+    import htm from 'https://esm.sh/htm@3.1.1';
 
-</div>
-
-<div id="search" class="tab-content" style="display: block;">
-  <h2>搜索歌曲</h2>
-  <form id="songForm">
-    <input type="text" id="title" name="title" placeholder="歌名(Or 首拼)" oninput="query()">
-    <div class="autocomplete" style="width:300px;">
-        <input type="text" id="singer" name="singer" placeholder="歌手" oninput="query()">
-    </div>
-
-  </form>
-  <div id="search_results" class="song_list"></div>
-
-  <div style="margin-top: -100px;"><button style="border-radius: 25px; height: 40px; padding: 5px;"
-    onclick="
-      document.getElementById('yt_agent').style.display = 'block';
-      document.getElementById('subframe').src = '/yt';
-    "
-    >添加Youtube源</button></div>
-</div>
-
-<div id="list" class="tab-content">
-  <div id="song_list" class="song_list playing"></div>
-  <div class="control">
-    <div onclick="toggle_vocal()">原/伴唱</div>
-    <div onclick="skip_current()">切歌</div>
-    <div onclick="replay()">重播</div>
-  </div>
-</div>
-
-<div id="yt_agent" style="position: fixed; z-index: 999; height: 100vh; width: 100vw; top:0; left:0; background-color: #d4d4d4; display: none;">
-  <div style="position: absolute;
-  right: 5px;
-  font-size: 40px;
-  border-radius: 40px;
-  background-color: #4f00ff9c;
-  width: 50px;
-  height: 50px;
-  padding: 5px;
-  text-align: center; "
-  onclick="document.getElementById('yt_agent').style.display = 'none';
-    document.getElementById('subframe').src = ''
-  ">X</div>
-  <iframe id="subframe" style="height: 100vh; width: 100vw;"></iframe>
-</div>
-<script>
-    var pendingQuery = null;
-    var page = 0;
-  function openTab(tabName) {
-    // Hide all tab content
-    var tabs = document.getElementsByClassName("tab-content");
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].style.display = "none";
+    // Map HTML-style attrs (class/for) to React props so the `class=` markup works.
+    function h(type, props, ...children) {
+      if (props) {
+        if ('class' in props) { props.className = props.class; delete props.class; }
+        if ('for' in props) { props.htmlFor = props.for; delete props.for; }
+      }
+      return React.createElement(type, props, ...children);
     }
+    const html = htm.bind(h);
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-    // Deactivate all tabs
-    var tabButtons = document.getElementsByClassName("tab");
-    for (var i = 0; i < tabButtons.length; i++) {
-      tabButtons[i].classList.remove("active");
-    }
-
-    // Show the selected tab content
-    document.getElementById(tabName).style.display = "block";
-
-    // Activate the selected tab
-    event.currentTarget.classList.add("active");
-  }
-  var ws = null;
-  
-  function connect() {
-    ws = new WebSocket(`ws://${window.location.host}/ws`);
-    ws.onopen = function (event) {
-      ws.send('list');
+    /* ------------------------------ helpers ------------------------------ */
+    const api = {
+      async op(payload) {
+        const r = await fetch('/op', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        return r.json();
+      },
+      async singers() { try { return await (await fetch('/singers')).json(); } catch { return []; } },
+      async vocal() { const t = await (await fetch('/vocal')).text(); return t.trim().toLowerCase() === 'true'; },
     };
-    ws.onmessage = function (event) {
-      var data = JSON.parse(event.data);
-      console.log(data);
-      var total = 0;
-      container = document.getElementById('song_list');
-      counter = document.getElementById('counter');
-      container.innerHTML = "";
-      data.forEach(element => {
-          var l = document.createElement('div');
-          l.setAttribute('songid', element[0]);
-          l.classList.add('li')
-          l.innerHTML = `<div>${element[1]}-${element[2]}</div>
-          <div class="control-group">
-              <div onclick="place_top(this)">T</div>
-              <div onclick="del_song(this)">X</div>
-          </div>
-          `;
-          container.appendChild(l);
-          total += 1;
-          counter.innerHTML = total;
+
+    function gradientFor(str) {
+      let hsh = 0;
+      for (let i = 0; i < (str || '').length; i++) hsh = (hsh * 31 + str.charCodeAt(i)) % 360;
+      return `linear-gradient(135deg, hsl(${hsh} 70% 58%), hsl(${(hsh + 50) % 360} 72% 48%))`;
+    }
+    const SINGER_PAGE = 60;   // singer grid: initial count and infinite-scroll increment
+    const NOTES = ['🎵', '🎶', '🎤', '🎧', '🎙️', '💿', '🎼'];
+    const noteFor = (str) => { let s = 0; for (let i = 0; i < (str || '').length; i++) s = (s + str.charCodeAt(i)) % NOTES.length; return NOTES[s]; };
+    const getCookie = (k) => { const m = document.cookie.match(new RegExp('(?:^|; )' + k + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; };
+    const ordinal = (n) => { const s = ['th','st','nd','rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+
+    /* ---------------------------- artist avatars ---------------------------
+       Resolve a singer name to a real artist/album image via JSONP (no CORS,
+       no backend change): Deezer artist photo first, then iTunes album art,
+       else null -> emoji fallback. Results cached in memory + localStorage. */
+    const firstSinger = (s) => (s || '').split(/[_&＆、/]/)[0].trim();
+    const isYtb = (s) => /\(YTB\)/i.test(s || '');
+    const stripYtb = (s) => (s || '').replace(/\s*\(YTB\)\s*$/i, '').trim();
+    // Detect a pasted YouTube link in a search box and normalise it to a canonical
+    // watch URL, so we can jump straight into the "add from YouTube" review step.
+    const YT_URL_RE = /(?:youtube\.com\/(?:watch\?(?:[^\s]*&)?v=|shorts\/|embed\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i;
+    const matchYoutubeUrl = (s) => { const m = (s || '').match(YT_URL_RE); return m ? `https://www.youtube.com/watch?v=${m[1]}` : null; };
+    const avatarMem = new Map();      // key -> url string | '' (resolved, '' = none)
+    const avatarPending = new Map();  // key -> in-flight Promise (dedupe)
+    let jsonpSeq = 0;
+    function jsonp(build) {
+      return new Promise((resolve) => {
+        const cb = '__avcb_' + (++jsonpSeq);
+        const s = document.createElement('script');
+        let done = false;
+        const fin = (v) => { if (done) return; done = true; clearTimeout(tm); try { delete window[cb]; } catch {} s.remove(); resolve(v); };
+        const tm = setTimeout(() => fin(null), 8000);
+        window[cb] = (data) => fin(data);
+        s.onerror = () => fin(null);
+        s.src = build(cb);
+        document.head.appendChild(s);
       });
+    }
+    const deezerAvatar = (name) => jsonp((cb) =>
+      `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=1&output=jsonp&callback=${cb}`)
+      .then((d) => { const a = d && d.data && d.data[0]; const pic = a && (a.picture_medium || a.picture_big || a.picture);
+        return pic && !pic.includes('/artist//') ? pic : null; }).catch(() => null);
+    const itunesAvatar = (name) => jsonp((cb) =>
+      `https://itunes.apple.com/search?term=${encodeURIComponent(name)}&entity=album&limit=1&callback=${cb}`)
+      .then((d) => { const a = d && d.results && d.results[0]; const art = a && a.artworkUrl100;
+        return art ? art.replace('100x100bb', '300x300bb').replace('100x100', '300x300') : null; }).catch(() => null);
+    function resolveAvatar(key) {
+      if (avatarMem.has(key)) return Promise.resolve(avatarMem.get(key));
+      let cached = null; try { cached = localStorage.getItem('av:' + key); } catch {}
+      if (cached) { avatarMem.set(key, cached); return Promise.resolve(cached); }
+      if (avatarPending.has(key)) return avatarPending.get(key);
+      const p = (async () => {
+        const url = (await deezerAvatar(key)) || (await itunesAvatar(key)) || '';
+        avatarMem.set(key, url);
+        if (url) { try { localStorage.setItem('av:' + key, url); } catch {} }
+        avatarPending.delete(key);
+        return url;
+      })();
+      avatarPending.set(key, p);
+      return p;
+    }
+
+    // UI strings not present in the backend i18n files.
+    const EXTRA = {
+      en: {
+        brand_sub: 'Karaoke', now_playing: 'Now Playing', up_next: 'Up Next', queue_label: 'In Line',
+        tap_to_start: 'Nothing playing yet', tap_to_start_sub: 'Find a song below — the first pick starts the show.',
+        mini_idle: 'Pick a song to start', mini_idle_sub: 'Search below',
+        add: 'Add', queued: 'Queued', playing: 'Playing', play_next: 'Play next', remove: 'Remove',
+        trending: 'Popular Right Now', results: 'Results', no_results: 'No songs found',
+        no_results_sub: 'Try another title, pinyin initials, or singer name.',
+        empty_queue: 'No songs in line', empty_queue_sub: 'Added songs will line up here.',
+        vocal: 'Original', accomp: 'Accompaniment', skip: 'Skip', replay: 'Replay',
+        skip_confirm_t: 'Skip the current song?', skip_confirm_p: 'It stops playing for everyone in the room.',
+        confirm_skip: 'Skip', cancel: 'Cancel', reset: 'Reset', next_short: 'Next',
+        mode_songs: 'Songs', mode_singers: 'Singers', mode_ytb: 'YouTube',
+        singer_search_ph: 'Search a singer', pick_singer: 'Pick a singer', singers_count: 'singers',
+        singers_none: 'No singers found', singers_none_sub: 'Try a different name or initials.',
+        view_songs: 'View songs', back: 'Back', songs_by: 'Songs', singer_keep_typing: 'Keep typing to narrow down…',
+        ytb_search_ph: 'Search YouTube songs', add_from_yt: 'Add from YouTube',
+        ytb_empty_t: 'Not in the library yet', ytb_empty_sub: "Can't find your song? Add it straight from YouTube.",
+        list_end: "That's the end of the list",
+        yt_add_tab: 'Add', yt_queue_tab: 'Queue', yt_modal_title: 'Add from YouTube',
+        yt_link_ph: 'Paste a YouTube link', yt_fetch: 'Fetch', yt_fetching: 'Reading the video…',
+        yt_link_help: 'Paste a YouTube video link (up to 10 minutes) and we’ll import it for karaoke.',
+        yt_song_name: 'Song name', yt_singer: 'Singer', yt_quickfill: 'Quick fill · swipe to pick',
+        yt_caption: 'Lyrics source', yt_cap_none: 'None — recognize from audio',
+        yt_cap_orig: 'Caption', yt_cap_auto: 'Auto', yt_change: 'Change link',
+        yt_submit: 'Add to queue', yt_reset: 'Reset', yt_added: 'Added to the processing queue',
+        yt_err_link: "Couldn't read that link — check the URL and try again.",
+        yt_err_title: 'Please enter a song name.', yt_err_submit: 'Submit failed — please try again.',
+        yt_queue_empty_t: 'Nothing processing', yt_queue_empty_sub: 'Songs you import will show their progress here.',
+        yt_st_pending: 'Waiting', yt_st_proc: 'Processing', yt_st_done: 'Ready', yt_st_err: 'Failed',
+        yt_dbl_t: 'Double-check the song info',
+        yt_dbl_p: 'The server matches lyrics using the exact song name and singer to build the video. Please confirm they’re correct.',
+        yt_dbl_edit: 'Let me edit', yt_dbl_ok: 'Confirm & add',
+        added_first: 'Added — starting now', added_pos: 'Added — {n} in line',
+        moved_toast: 'Moved to front', removed_toast: 'Removed from line', skipped_toast: 'Skipped',
+        replayed_toast: 'Replaying from the top', songs: 'songs',
+      },
+      'zh-CN': {
+        brand_sub: '点歌台', now_playing: '正在播放', up_next: '即将播放', queue_label: '排队中',
+        tap_to_start: '还没有歌曲在播放', tap_to_start_sub: '在下方搜索点歌，第一首即刻开唱。',
+        mini_idle: '点一首歌开始吧', mini_idle_sub: '在下方搜索',
+        add: '点歌', queued: '已点', playing: '播放中', play_next: '插队', remove: '移除',
+        trending: '当前热门', results: '搜索结果', no_results: '没有找到歌曲',
+        no_results_sub: '换个歌名、首字母拼音或歌手试试。',
+        empty_queue: '还没有人排队', empty_queue_sub: '点过的歌会排在这里。',
+        vocal: '原唱', accomp: '伴奏', skip: '切歌', replay: '重播',
+        skip_confirm_t: '确定要切歌吗？', skip_confirm_p: '这会为房间里所有人停止当前歌曲。',
+        confirm_skip: '切歌', cancel: '取消', reset: '重置', next_short: '下一首',
+        mode_songs: '按歌曲', mode_singers: '按歌手', mode_ytb: 'YouTube',
+        singer_search_ph: '搜索歌手', pick_singer: '选择歌手', singers_count: '位歌手',
+        singers_none: '没有找到歌手', singers_none_sub: '换个名字或首字母拼音试试。',
+        view_songs: '查看歌曲', back: '返回', songs_by: '歌曲', singer_keep_typing: '继续输入以缩小范围…',
+        ytb_search_ph: '搜索 YouTube 歌曲', add_from_yt: '从 YouTube 添加',
+        ytb_empty_t: '曲库里还没有', ytb_empty_sub: '找不到想唱的歌？可以直接从 YouTube 添加。',
+        list_end: '已经到底啦',
+        yt_add_tab: '添加', yt_queue_tab: '处理队列', yt_modal_title: '从 YouTube 添加',
+        yt_link_ph: '粘贴 YouTube 链接', yt_fetch: '获取', yt_fetching: '正在读取视频…',
+        yt_link_help: '粘贴一个 YouTube 视频链接（不超过 10 分钟），即可导入并制作卡拉OK。',
+        yt_song_name: '歌名', yt_singer: '歌手', yt_quickfill: '快捷填入 · 可划选多个',
+        yt_caption: '歌词来源', yt_cap_none: '不使用 — 由人声识别',
+        yt_cap_orig: '字幕', yt_cap_auto: '自动', yt_change: '更换链接',
+        yt_submit: '加入队列', yt_reset: '重置', yt_added: '已加入处理队列',
+        yt_err_link: '无法读取该链接，请检查后重试。',
+        yt_err_title: '请填写歌名。', yt_err_submit: '提交失败，请重试。',
+        yt_queue_empty_t: '暂无处理任务', yt_queue_empty_sub: '导入的歌曲会在这里显示处理进度。',
+        yt_st_pending: '等待中', yt_st_proc: '处理中', yt_st_done: '已完成', yt_st_err: '出错',
+        yt_dbl_t: '请核对歌曲信息',
+        yt_dbl_p: '服务器会根据准确的歌名和歌手来匹配歌词并生成视频，请确认信息无误。',
+        yt_dbl_edit: '再改改', yt_dbl_ok: '确认添加',
+        added_first: '已点歌 — 即将开唱', added_pos: '已点歌 — 第 {n} 位',
+        moved_toast: '已插到最前', removed_toast: '已移出队列', skipped_toast: '已切歌',
+        replayed_toast: '正在重播', songs: '首',
+      },
     };
-    ws.onclose = function (event) {
-      console.log('close');
-      setTimeout(connect, 1000);
-    };
-  }
 
+    /* -------------------------------- i18n -------------------------------- */
+    function useI18n() {
+      const [lang, setLang] = useState(getCookie('lang') || 'en');
+      const [dict, setDict] = useState({});
+      useEffect(() => {
+        let ok = true;
+        fetch(`/i18n-${lang}.json`).then((r) => r.json()).then((d) => { if (ok) setDict(d); }).catch(() => {});
+        document.documentElement.lang = lang;
+        return () => { ok = false; };
+      }, [lang]);
+      const extra = EXTRA[lang] || EXTRA.en;
+      const t = useCallback((k) => dict[k] || extra[k] || k, [dict, extra]);
+      const changeLang = useCallback((l) => { document.cookie = `lang=${l}; path=/; max-age=31536000`; setLang(l); }, []);
+      return { lang, t, changeLang };
+    }
 
-  // function fetchList(){
-  //   var total = 0;
-  //   fetch('/list').then(async (data)=> {
-  //       container = document.getElementById('song_list');
-  //       counter = document.getElementById('counter');
-  //       container.innerHTML = "";
-  //       (await data.json()).forEach(element => {
-  //           var l = document.createElement('div');
-  //           l.setAttribute('songid', element[0]);
-  //           l.classList.add('li')
-  //           l.innerHTML = `<div>${element[1]}-${element[2]}</div>
-  //           <div class="control-group">
-  //               <div onclick="place_top(this)">T</div>
-  //               <div onclick="del_song(this)">X</div>
-  //           </div>
-  //           `;
-  //           container.appendChild(l);
-  //           total += 1;
-  //           counter.innerHTML = total;
-  //       });
-  //   })
-  // }
-
-  function operation(payload, cb = null) {
-    const requestOptions = {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
+    /* ------------------------------- queue -------------------------------- */
+    function useQueue() {
+      const [queue, setQueue] = useState([]);
+      useEffect(() => {
+        let ws, timer, closed = false;
+        const connect = () => {
+          const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+          ws = new WebSocket(`${proto}://${location.host}/ws`);
+          ws.onopen = () => ws.send('list');
+          ws.onmessage = (e) => { try { setQueue(JSON.parse(e.data)); } catch {} };
+          ws.onclose = () => { if (!closed) timer = setTimeout(connect, 1000); };
+          ws.onerror = () => { try { ws.close(); } catch {} };
         };
-    fetch('/op', requestOptions).then(cb);
+        connect();
+        return () => { closed = true; clearTimeout(timer); try { ws && ws.close(); } catch {} };
+      }, []);
+      return queue;
+    }
 
-  }
+    /* ------------------------------ Toasts -------------------------------- */
+    function Toasts({ items }) {
+      return html`<div class="toasts">
+        ${items.map((t) => html`<div key=${t.id} class=${'toast ' + (t.kind || '')}><span>${t.icon || '✓'}</span><span>${t.msg}</span></div>`)}
+      </div>`;
+    }
 
-  function place_top(e) {
-    var songid = parseInt(e.parentNode.parentNode.getAttribute('songid'));
-    operation({op: 'top', id: songid});
-  }
+    /* ------------------------------ Marquee ------------------------------- */
+    // Renders text that gently floats left-and-right only when it overflows.
+    function Marquee({ text }) {
+      const wrapRef = useRef(null);
+      const [shift, setShift] = useState(0);
+      useEffect(() => {
+        let raf;
+        const measure = () => {
+          const w = wrapRef.current; if (!w) return;
+          const inner = w.firstElementChild; if (!inner) return;
+          const diff = inner.scrollWidth - w.clientWidth;
+          setShift(diff > 4 ? diff : 0);
+        };
+        measure();
+        const tid = setTimeout(measure, 60);              // re-measure after layout/fonts settle
+        raf = requestAnimationFrame(measure);
+        window.addEventListener('resize', measure);
+        return () => { clearTimeout(tid); cancelAnimationFrame(raf); window.removeEventListener('resize', measure); };
+      }, [text]);
+      const style = shift ? { '--shift': `-${shift}px`, '--mq': `${Math.max(5, shift / 28)}s` } : undefined;
+      return html`<span class="mq" ref=${wrapRef}>
+        <span class=${'mq-i' + (shift ? ' run' : '')} style=${style}>${text}</span>
+      </span>`;
+    }
 
-  function del_song(e) {
-    var songid = parseInt(e.parentNode.parentNode.getAttribute('songid'));
-    operation({op: 'remove', id: songid});
-  }
+    /* ------------------------------ Avatar -------------------------------- */
+    // Shows the emoji fallback immediately, then swaps in the artist artwork.
+    function Avatar({ singer, seed, cls, bg }) {
+      const fb = seed || singer || '';
+      const key = firstSinger(singer || '');
+      const [url, setUrl] = useState(() => (key && avatarMem.get(key)) || '');
+      const [err, setErr] = useState(false);
+      useEffect(() => {
+        let alive = true; setErr(false);
+        if (!key) { setUrl(''); return; }
+        resolveAvatar(key).then((u) => { if (alive) setUrl(u); });
+        return () => { alive = false; };
+      }, [key]);
+      return html`<div class=${cls} style=${bg ? { background: bg } : undefined}>
+        ${url && !err
+          ? html`<img class="av-img" src=${url} alt="" loading="lazy" onError=${() => setErr(true)} />`
+          : noteFor(fb)}
+      </div>`;
+    }
 
-  function toggle_vocal() {
-    fetch("/vocal").then()
-  }
+    /* ---------------------------- Search row ------------------------------ */
+    function SearchRow({ song, t, pos, onAdd }) {
+      const singer = song[2];
+      const name = stripYtb(song[1]);
+      const ytb = isYtb(song[1]);
+      let btn;
+      if (pos === 0) {
+        btn = html`<div class="add-btn playing-now"><div class="eq" style=${{ height: '13px' }}><i></i><i></i><i></i><i></i></div></div>`;
+      } else if (pos > 0) {
+        btn = html`<div class="add-btn queued"><span class="pos-badge"><span>${pos}</span></span> ${t('queued')}</div>`;
+      } else {
+        btn = html`<button class="add-btn" onClick=${() => onAdd(song)}><span>＋</span><span>${t('add')}</span></button>`;
+      }
+      return html`<div class="row">
+        <${Avatar} cls="thumb" singer=${singer} seed=${singer || name} bg=${gradientFor(singer || name)} />
+        <div class="meta">
+          <div class="name"><${Marquee} text=${name} />${ytb ? html`<span class="yt-tag">▶ YT</span>` : null}</div>
+          <div class="singer">${singer || '—'}</div>
+        </div>
+        ${btn}
+      </div>`;
+    }
 
-  function skip_current() {
-    operation({op: 'skip'})
-  }
-  function replay() {
-    operation({op: 'replay'})
-  }
+    /* ----------------------------- Browse view ---------------------------- */
+    // Three ways to pick a song: by song, by singer (then their catalog), or
+    // from YouTube-sourced songs (with an "add from YouTube" escape hatch).
+    function BrowseView({ t, posMap, onAdd, openYt }) {
+      const [mode, setMode] = useState('songs');           // songs | singers | ytb
+      const [title, setTitle] = useState('');
+      const [singer, setSinger] = useState('');
+      const [acOpen, setAcOpen] = useState(false);
+      const [singerQuery, setSingerQuery] = useState('');  // singers mode: list filter
+      const [picked, setPicked] = useState(null);          // singers mode: chosen singer
+      const [ytbText, setYtbText] = useState('');
+      const [singers, setSingers] = useState([]);
+      const [results, setResults] = useState([]);
+      const [count, setCount] = useState(0);
+      const [page, setPage] = useState(0);
+      const [loading, setLoading] = useState(false);
+      const [compact, setCompact] = useState(false);          // shrink the search bar on scroll
+      const [singerLimit, setSingerLimit] = useState(SINGER_PAGE);
+      const reqId = useRef(0);
+      const sentinel = useRef(null);
+      const scroller = useRef(null);
 
+      useEffect(() => { api.singers().then(setSingers); }, []);
 
-  function query(){
-    page = 0;
-    var container = document.getElementById('search_results');
-    container.innerHTML = "";
-    if (pendingQuery) clearTimeout(pendingQuery);
-    pendingQuery = setTimeout(_query, 500);
-  }
+      // Collapse the search header once scrolled (window scroll on mobile,
+      // inner .browse scroll on desktop). Hysteresis avoids flicker.
+      useEffect(() => {
+        const sc = scroller.current;
+        const onScroll = () => {
+          const y = Math.max(window.scrollY || 0, sc ? sc.scrollTop : 0);
+          setCompact((prev) => (prev ? y > 14 : y > 46));
+        };
+        window.addEventListener('scroll', onScroll, { passive: true });
+        if (sc) sc.addEventListener('scroll', onScroll, { passive: true });
+        return () => { window.removeEventListener('scroll', onScroll); if (sc) sc.removeEventListener('scroll', onScroll); };
+      }, []);
 
-  function _query(){
+      // Are we showing a song list (vs. the singer picker step)?
+      const listing = mode === 'songs' || mode === 'ytb' || (mode === 'singers' && !!picked);
+      const qp = useMemo(() => {
+        if (mode === 'songs') return { keyword: title, singer, source: '' };
+        if (mode === 'ytb') return { keyword: ytbText || '(YTB)', singer: '', source: 'ytb' };
+        if (mode === 'singers' && picked) return { keyword: '', singer: picked, source: '' };
+        return null;
+      }, [mode, title, singer, ytbText, picked]);
+      const qpKey = qp ? JSON.stringify(qp) : '';
 
-    var keyword = document.getElementById('title').value;
-    var singer = document.getElementById("singer").value;
-    var container = document.getElementById('search_results');
+      const fetchPage = useCallback(async (p, append) => {
+        if (!qp) return;
+        const id = ++reqId.current; setLoading(true);
+        try {
+          const [c, rows] = await api.op({ op: 'query', keyword: qp.keyword, singer: qp.singer, page: p, source: qp.source });
+          if (id !== reqId.current) return;
+          setCount(c || 0); setPage(p);
+          setResults((prev) => (append ? [...prev, ...rows] : rows));
+        } catch {} finally { if (id === reqId.current) setLoading(false); }
+      }, [qpKey]);
 
-    const list_song = async (data)=> {
-        var rep = await data.json();
-        if (rep[0] > 10) {
-            var l = document.createElement('div');
-            l.innerHTML = `<div onclick="goto_page(${page - 1})"> ${page > 0?'<':''} </div> <div> ${page + 1} / ${Math.ceil(rep[0]/10)} </div><div onclick="goto_page(${page + 1})">  ${page*10 <= rep[0] - 10 ?'>':''} </div>`
-            container.appendChild(l);
-            l.style.marginBottom = '10px';
-            l.style.backgroundColor = 'lightpink';
-            l.style.justifyContent = 'space-around';
-        }
-        rep[1].forEach((element)=>{
-            var l = document.createElement('div');
-            l.setAttribute('payload', JSON.stringify(element));
-            l.classList.add('li')
-            l.innerHTML = `<div>${element[1]} - ${element[2]}</div>
-            <div class="control-group">
-                <div onclick="add_track(this)">+</div>
+      useEffect(() => {
+        if (!listing) { reqId.current++; setResults([]); setCount(0); setLoading(false); return; }
+        const hdl = setTimeout(() => { if (scroller.current) scroller.current.scrollTop = 0; fetchPage(0, false); }, 360);
+        return () => clearTimeout(hdl);
+      }, [qpKey, listing, fetchPage]);
+
+      useEffect(() => {
+        const el = sentinel.current; if (!el || !listing) return;
+        const totalPages = Math.max(1, Math.ceil(count / 10));
+        const io = new IntersectionObserver((es) => {
+          if (es[0].isIntersecting && !loading && page + 1 < totalPages) fetchPage(page + 1, true);
+        }, { rootMargin: '300px' });
+        io.observe(el); return () => io.disconnect();
+      }, [loading, page, count, listing, fetchPage]);
+
+      const acMatches = useMemo(() => {
+        const v = singer.trim().toUpperCase();
+        return (v ? singers.filter((s) => s.toUpperCase().includes(v)) : singers).slice(0, 40);
+      }, [singer, singers]);
+
+      // Full filtered singer set; the grid renders a growing slice (infinite scroll).
+      const singerFiltered = useMemo(() => {
+        if (mode !== 'singers' || picked) return [];
+        const v = singerQuery.trim().toUpperCase();
+        return v ? singers.filter((s) => s.toUpperCase().includes(v)) : singers;
+      }, [mode, picked, singerQuery, singers]);
+      const singerMatches = useMemo(() => singerFiltered.slice(0, singerLimit), [singerFiltered, singerLimit]);
+
+      // reset the visible count when the picker view / filter changes
+      useEffect(() => { setSingerLimit(SINGER_PAGE); }, [mode, picked, singerQuery]);
+
+      // grow the singer grid as the bottom sentinel scrolls into view
+      useEffect(() => {
+        const el = sentinel.current;
+        if (!el || mode !== 'singers' || picked) return;
+        const io = new IntersectionObserver((es) => {
+          if (es[0].isIntersecting) setSingerLimit((n) => (n < singerFiltered.length ? n + SINGER_PAGE : n));
+        }, { rootMargin: '400px' });
+        io.observe(el);
+        return () => io.disconnect();
+      }, [mode, picked, singerFiltered.length]);
+
+      const modes = [
+        { id: 'songs', icon: '🎵', label: t('mode_songs') },
+        { id: 'singers', icon: '🎤', label: t('mode_singers') },
+        { id: 'ytb', icon: '▶', label: t('mode_ytb') },
+      ];
+
+      // Pasting a YouTube link into a search box jumps straight to the add-from-YT
+      // review step instead of running a (futile) library search for the URL.
+      const onSearchInput = (val, setField) => {
+        const yt = matchYoutubeUrl(val);
+        if (yt) { setField(''); openYt(yt); } else setField(val);
+      };
+
+      const resultsCard = html`
+        ${results.length > 0 ? html`<div class="card">
+          ${results.map((s, i) => html`<${SearchRow} key=${s[0] + '-' + i} song=${s} t=${t} onAdd=${onAdd} pos=${posMap.has(s[0]) ? posMap.get(s[0]) : -1} />`)}
+        </div>` : null}
+        ${loading ? html`<div class="loader"><div class="spinner"></div></div>` : null}`;
+
+      return html`<div class="browse" ref=${scroller}>
+        <div class=${'search-head' + (compact ? ' compact' : '')}>
+          <div class="seg">
+            ${modes.map((m) => html`<button key=${m.id} class=${mode === m.id ? 'active' : ''} onClick=${() => setMode(m.id)}>
+              <span class="si">${m.icon}</span><span class="sl">${m.label}</span></button>`)}
+          </div>
+
+          ${mode === 'songs' ? html`
+            <div class="search-fields">
+              <div class="field">
+                <span class="fi">🔎</span>
+                <input value=${title} placeholder=${t('title')} autoComplete="off" onInput=${(e) => onSearchInput(e.target.value, setTitle)} />
+                ${title ? html`<button class="clear-x" onClick=${() => setTitle('')}>✕</button>` : null}
+              </div>
+              <div class="field">
+                <span class="fi">🎤</span>
+                <input value=${singer} placeholder=${t('singer')} autoComplete="off"
+                  onInput=${(e) => { setSinger(e.target.value); setAcOpen(true); }}
+                  onFocus=${() => setAcOpen(true)} onBlur=${() => setTimeout(() => setAcOpen(false), 150)} />
+                ${singer ? html`<button class="clear-x" onClick=${() => setSinger('')}>✕</button>` : null}
+                ${acOpen && acMatches.length > 0 ? html`<div class="ac-list">
+                  ${acMatches.map((s) => html`<div key=${s} class="ac-item" onMouseDown=${() => { setSinger(s); setAcOpen(false); }}><span class="fi">🎤</span>${s}</div>`)}
+                </div>` : null}
+              </div>
             </div>
-            `;
-            container.appendChild(l);
-        })
+            ${(title || singer) ? html`<div class="toolbar"><button class="chip" onClick=${() => { setTitle(''); setSinger(''); }}>↺ ${t('reset')}</button></div>` : null}
+          ` : null}
+
+          ${mode === 'singers' && !picked ? html`
+            <div class="field">
+              <span class="fi">🎤</span>
+              <input value=${singerQuery} placeholder=${t('singer_search_ph')} autoComplete="off" onInput=${(e) => setSingerQuery(e.target.value)} />
+              ${singerQuery ? html`<button class="clear-x" onClick=${() => setSingerQuery('')}>✕</button>` : null}
+            </div>` : null}
+
+          ${mode === 'singers' && picked ? html`
+            <div class="crumb">
+              <button class="back-chip" onClick=${() => setPicked(null)}>‹ ${t('back')}</button>
+              <div class="crumb-name">🎤 ${picked}</div>
+            </div>` : null}
+
+          ${mode === 'ytb' ? html`
+            <div class="field">
+              <span class="fi">🔎</span>
+              <input value=${ytbText} placeholder=${t('ytb_search_ph')} autoComplete="off" onInput=${(e) => onSearchInput(e.target.value, setYtbText)} />
+              ${ytbText ? html`<button class="clear-x" onClick=${() => setYtbText('')}>✕</button>` : null}
+            </div>
+            <div style=${{ marginTop: '12px' }}>
+              <button class="cta" onClick=${() => openYt()}><span class="yi">▶</span> ${t('add_from_yt')}</button>
+            </div>` : null}
+        </div>
+
+        ${listing ? html`
+          <div class="section-title">
+            ${mode === 'ytb' ? html`<span>▶</span><span>${t('mode_ytb')}</span>`
+              : mode === 'singers' ? html`<span>🎵</span><span>${t('songs_by')}</span>`
+              : (!title && !singer) ? html`<span>🔥</span><span>${t('trending')}</span>`
+              : html`<span>🎵</span><span>${t('results')}</span>`}
+            ${count > 0 ? html`<span style=${{ color: 'var(--accent)' }}>· ${count}</span>` : null}
+          </div>
+          ${resultsCard}
+          ${!loading && results.length === 0 ? (mode === 'ytb'
+            ? html`<div class="empty"><div class="em-ic">📺</div><div class="em-t">${t('ytb_empty_t')}</div><div class="em-s">${t('ytb_empty_sub')}</div></div>`
+            : html`<div class="empty"><div class="em-ic">🔍</div><div class="em-t">${t('no_results')}</div><div class="em-s">${t('no_results_sub')}</div></div>`) : null}
+          ${!loading && results.length > 0 && page + 1 >= Math.max(1, Math.ceil(count / 10))
+            ? html`<div class="list-end">${t('list_end')}</div>` : null}
+        ` : html`
+          <div class="section-title"><span>🎤</span><span>${t('pick_singer')}</span>
+            ${singerFiltered.length > 0 ? html`<span style=${{ color: 'var(--accent)' }}>· ${singerFiltered.length}</span>` : null}
+          </div>
+          ${singerMatches.length > 0 ? html`<div class="singer-grid">
+            ${singerMatches.map((s) => html`<div class="singer-card" key=${s} onClick=${() => { setPicked(s); window.scrollTo({ top: 0 }); if (scroller.current) scroller.current.scrollTop = 0; }}>
+              <${Avatar} cls="sg-avatar" singer=${s} seed=${s} bg=${gradientFor(s)} />
+              <div class="sg-name">${s}</div>
+            </div>`)}
+          </div>` : html`<div class="empty"><div class="em-ic">🔍</div><div class="em-t">${t('singers_none')}</div><div class="em-s">${t('singers_none_sub')}</div></div>`}
+          ${singerMatches.length > 0 && singerMatches.length >= singerFiltered.length ? html`<div class="list-end">${t('list_end')}</div>` : null}
+        `}
+
+        <div ref=${sentinel} style=${{ height: '1px' }}></div>
+      </div>`;
     }
-    operation({op:'query', keyword, singer, page}, list_song)
 
-  }
+    /* ------------------------------- Stage -------------------------------- */
+    // Now-playing + controls + up-next. Shared by the mobile sheet and desktop panel.
+    function Stage({ t, queue, vocalOn, onToggleVocal, onReplay, onSkip, onTop, onRemove }) {
+      const playing = queue[0];
+      const upNext = queue.slice(1);
+      const upRef = useRef(null);
+      const contentRef = useRef(null);
+      const endRef = useRef(null);
 
-  function add_track(e){
-    var song = JSON.parse(e.parentNode.parentNode.getAttribute('payload'));
-    operation({op: 'add', song});
-  }
+      // Rubber-band overscroll: pull up past the bottom of the queue to reveal the
+      // "end of list" message as overflow content, then it springs back on release.
+      useEffect(() => {
+        const sc = upRef.current, content = contentRef.current;
+        if (!sc || !content) return;
+        let startY = 0, pulling = false;
+        // Always animate the content back to rest. Called on touchend/cancel and
+        // whenever we stop pulling, so the reveal can never get stuck open.
+        const TRANS = 'transform 0.42s cubic-bezier(0.22,1,0.3,1)';
+        const springBack = () => {
+          pulling = false;
+          sc.classList.remove('overscrolling');          // restore the scroll indicator
+          if (!content.style.transform) return;          // not revealing
+          const endEl = endRef.current;
+          content.style.transition = TRANS;
+          if (endEl) endEl.style.transition = TRANS;
+          void content.offsetHeight;                     // flush: commit current transforms WITH the transition,
+          content.style.transform = '';                  // so changing them now actually animates (Safari coalesces otherwise)
+          if (endEl) endEl.style.transform = '';         // back to hidden (CSS translateY(52px))
+        };
+        const start = (e) => { if (e.touches.length === 1) { startY = e.touches[0].clientY; pulling = false; } };
+        const move = (e) => {
+          if (e.touches.length !== 1) return;
+          const endEl = endRef.current;
+          if (!endEl) { if (pulling) springBack(); return; }   // empty queue, nothing to reveal
+          const dy = e.touches[0].clientY - startY;            // < 0 when pulling up
+          const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 2;
+          if (atBottom && dy < 0) {
+            // Only claim a *deliberate* pull (cancelable). During a fast fling the
+            // move is non-cancelable while native momentum settles — leave it to
+            // native (bounce is disabled, so it just clamps) so nothing sticks.
+            if (!e.cancelable) { if (pulling) springBack(); return; }
+            if (!pulling) { pulling = true; content.style.transition = 'none'; endEl.style.transition = 'none'; sc.classList.add('overscrolling'); }
+            e.preventDefault();
+            const pull = Math.min(-dy * 0.5, 52);              // damped, capped to the message height
+            content.style.transform = `translateY(${-pull}px)`;
+            endEl.style.transform = `translateY(${52 - pull}px)`;
+          } else if (pulling) {
+            springBack();
+          }
+        };
+        const end = () => { springBack(); };                   // safety net: always release the pull
+        // if a native scroll ever happens with a stray transform left, clear it
+        const onScroll = () => { if (!pulling && content.style.transform) springBack(); };
+        sc.addEventListener('touchstart', start, { passive: true });
+        sc.addEventListener('touchmove', move, { passive: false });
+        sc.addEventListener('touchend', end);
+        sc.addEventListener('touchcancel', end);
+        sc.addEventListener('scroll', onScroll, { passive: true });
+        return () => {
+          sc.removeEventListener('touchstart', start);
+          sc.removeEventListener('touchmove', move);
+          sc.removeEventListener('touchend', end);
+          sc.removeEventListener('touchcancel', end);
+          sc.removeEventListener('scroll', onScroll);
+        };
+      }, []);
 
-  function goto_page (i){
-    var container = document.getElementById('search_results');
-    page = i;
-    container.innerHTML = "";
-    _query();
-}
+      return html`<div class="stage">
+        ${playing ? html`
+          <div class="np" style=${{ background: gradientFor(playing[1]) }}>
+            <div class="np-tag"><div class="eq"><i></i><i></i><i></i><i></i></div> ${t('now_playing')}</div>
+            <div class="np-row">
+              <${Avatar} cls="np-art" singer=${playing[2]} seed=${playing[1]} />
+              <div><div class="np-name">${stripYtb(playing[1])}${isYtb(playing[1]) ? html`<span class="yt-tag">▶ YT</span>` : null}</div><div class="np-singer">${playing[2] || '—'}</div></div>
+            </div>
+          </div>`
+        : html`<div class="np" style=${{ background: 'linear-gradient(135deg,#4b5563,#374151)' }}>
+            <div class="np-tag">🎤 ${t('now_playing')}</div>
+            <div class="np-row"><div class="np-art">🎙️</div>
+              <div><div class="np-name">${t('tap_to_start')}</div><div class="np-singer">${t('tap_to_start_sub')}</div></div></div>
+          </div>`}
 
-  // setInterval(fetchList, 5000);
-  // fetchList();
-  query();
-  connect();
-//   openTab('search');
+        <div class="controls">
+          <button class=${'ctl ' + (vocalOn === false ? 'on' : '')} onClick=${onToggleVocal}>
+            <span class="ci">🎙️</span><span class="cl">${vocalOn === false ? t('accomp') : t('vocal')}</span>
+          </button>
+          <button class="ctl" onClick=${onReplay} disabled=${!playing}><span class="ci">↻</span><span class="cl">${t('replay')}</span></button>
+          <button class="ctl warn" onClick=${onSkip} disabled=${!playing}><span class="ci">⏭</span><span class="cl">${t('skip')}</span></button>
+        </div>
 
+        <div class="section-title" style=${{ marginTop: '20px' }}>
+          <span>📋</span><span>${t('up_next')}</span>
+          ${upNext.length > 0 ? html`<span style=${{ color: 'var(--accent)' }}>· ${upNext.length} ${t('songs')}</span>` : null}
+        </div>
+        <div class="upnext-zone">
+          <div class="upnext" ref=${upRef}>
+            <div class="upnext-content" ref=${contentRef}>
+              ${upNext.length > 0 ? html`
+                ${upNext.map((s, i) => html`
+                  <div class="q-row" key=${s[0]}>
+                    <div class="q-pos">${i + 1}</div>
+                    <div class="meta"><div class="name"><${Marquee} text=${stripYtb(s[1])} />${isYtb(s[1]) ? html`<span class="yt-tag">▶ YT</span>` : null}</div><div class="singer">${s[2] || '—'}</div></div>
+                    <div class="q-actions">
+                      ${i > 0 ? html`<button class="q-btn" onClick=${() => onTop(s[0])}><span>⤒</span><span class="ql">${t('play_next')}</span></button>` : null}
+                      <button class="q-btn danger" onClick=${() => onRemove(s[0])}><span>✕</span><span class="ql">${t('remove')}</span></button>
+                    </div>
+                  </div>`)}
+              `
+              : html`<div class="empty"><div class="em-ic">🎵</div><div class="em-t">${t('empty_queue')}</div><div class="em-s">${t('empty_queue_sub')}</div></div>`}
+            </div>
+          </div>
+          ${upNext.length > 0 ? html`<div class="upnext-end" ref=${endRef}>${t('list_end')}</div>` : null}
+        </div>
+      </div>`;
+    }
 
-function autocomplete(inp, arr) {
-  /*the autocomplete function takes two arguments,
-  the text field element and an array of possible autocompleted values:*/
-  var currentFocus;
-  /*execute a function when someone writes in the text field:*/
-  inp.addEventListener("input", function(e) {
-      var a, b, i, val = this.value;
-      /*close any already open lists of autocompleted values*/
-      closeAllLists();
-      if (!val) { return false;}
-      currentFocus = -1;
-      /*create a DIV element that will contain the items (values):*/
-      a = document.createElement("DIV");
-      a.setAttribute("id", this.id + "autocomplete-list");
-      a.setAttribute("class", "autocomplete-items");
-      /*append the DIV element as a child of the autocomplete container:*/
-      this.parentNode.appendChild(a);
-      /*for each item in the array...*/
-      for (i = 0; i < arr.length; i++) {
-        /*check if the item starts with the same letters as the text field value:*/
-        if (arr[i].substr(0, val.length).toUpperCase() == val.toUpperCase()) {
-          /*create a DIV element for each matching element:*/
-          b = document.createElement("DIV");
-          /*make the matching letters bold:*/
-          b.innerHTML = "<strong>" + arr[i].substr(0, val.length) + "</strong>";
-          b.innerHTML += arr[i].substr(val.length);
-          /*insert a input field that will hold the current array item's value:*/
-          b.innerHTML += "<input type='hidden' value='" + arr[i] + "'>";
-          /*execute a function when someone clicks on the item value (DIV element):*/
-              b.addEventListener("click", function(e) {
-              /*insert the value for the autocomplete text field:*/
-              inp.value = this.getElementsByTagName("input")[0].value;
-              query();
-              /*close the list of autocompleted values,
-              (or any other open lists of autocompleted values:*/
-              closeAllLists();
+    /* ----------------------------- Mini player ---------------------------- */
+    function MiniPlayer({ t, queue, bump, minimizing, onOpen }) {
+      const playing = queue[0];
+      const next = queue[1];
+      const inLine = Math.max(0, queue.length - 1);
+      const miniRef = useRef(null);
+      const onOpenRef = useRef(onOpen);
+      onOpenRef.current = onOpen;
+
+      // Swipe up on the pill to pull the full player open (as well as tapping).
+      useEffect(() => {
+        const el = miniRef.current; if (!el) return;
+        let startY = 0, startX = 0, fire = false;
+        const start = (e) => { startY = e.touches[0].clientY; startX = e.touches[0].clientX; fire = false; el.style.transition = 'none'; };
+        const move = (e) => {
+          const dy = e.touches[0].clientY - startY;
+          const dx = Math.abs(e.touches[0].clientX - startX);
+          if (dy < 0 && -dy > dx) {                 // mostly-vertical upward drag
+            if (e.cancelable) e.preventDefault();
+            const lift = Math.min(-dy, 64);
+            el.style.transform = `translateY(${-lift}px)`;
+            el.style.opacity = String(Math.max(0.5, 1 - lift / 140));
+            if (-dy > 36) fire = true;
+          }
+        };
+        const end = () => {
+          el.style.transition = ''; el.style.transform = ''; el.style.opacity = '';
+          if (fire) onOpenRef.current();
+          fire = false;
+        };
+        el.addEventListener('touchstart', start, { passive: true });
+        el.addEventListener('touchmove', move, { passive: false });
+        el.addEventListener('touchend', end);
+        el.addEventListener('touchcancel', end);
+        return () => {
+          el.removeEventListener('touchstart', start);
+          el.removeEventListener('touchmove', move);
+          el.removeEventListener('touchend', end);
+          el.removeEventListener('touchcancel', end);
+        };
+      }, []);
+
+      return html`<div class="mini-dock">
+        <div class=${'mini' + (bump ? ' bump' : '') + (minimizing ? ' minimizing' : '')} ref=${miniRef} onClick=${onOpen}>
+          ${playing ? html`
+            <${Avatar} cls="m-art" singer=${playing[2]} seed=${playing[1]} bg=${gradientFor(playing[1])} />
+            <div class="m-meta">
+              <div class="m-label"><div class="eq" style=${{ height: '11px' }}><i></i><i></i><i></i><i></i></div> ${t('now_playing')}</div>
+              <div class="m-name"><${Marquee} text=${stripYtb(playing[1])} /></div>
+              ${next ? html`<div class="m-next">${t('next_short')}: ${stripYtb(next[1])}</div>` : null}
+            </div>`
+          : html`
+            <div class="m-art" style=${{ background: 'linear-gradient(135deg,#4b5563,#374151)' }}>🎙️</div>
+            <div class="m-meta"><div class="m-name">${t('mini_idle')}</div><div class="m-next">${t('mini_idle_sub')}</div></div>`}
+          <div class=${'m-count' + (inLine ? '' : ' empty')}>
+            <span>📋</span><span class=${'cc-num' + (bump ? ' bump' : '')}>${inLine}</span>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    /* --------------------------- Player sheet ----------------------------- */
+    // Bottom sheet (mobile) with swipe-down-to-dismiss. The sheet follows the
+    // finger and closes past a threshold; otherwise it snaps back.
+    function PlayerSheet({ open, onClose, children }) {
+      const sheetRef = useRef(null);
+      const scrimRef = useRef(null);
+      const onCloseRef = useRef(onClose);
+      onCloseRef.current = onClose;
+
+      // Slide the sheet out, then close — used by tap (scrim/handle) so the
+      // panel always animates down, matching the swipe-to-dismiss gesture.
+      const animateClose = useCallback(() => {
+        const sheet = sheetRef.current;
+        if (sheet) { sheet.classList.remove('dragging', 'will-close'); sheet.style.transform = 'translateY(100%)'; }
+        if (scrimRef.current) scrimRef.current.style.opacity = '0';
+        setTimeout(() => onCloseRef.current(), 280);
+      }, []);
+
+      useEffect(() => {
+        const sheet = sheetRef.current; if (!sheet) return;
+        let startY = 0, dy = 0, dragging = false, allow = false;
+        // a downward drag dismisses, unless it starts inside the up-next list
+        // while that list is scrolled down (then it should scroll normally).
+        const scrollerAtTop = (target) => {
+          let el = target;
+          while (el && el !== sheet) {
+            if (el.classList && el.classList.contains('upnext')) return el.scrollTop <= 0;
+            el = el.parentNode;
+          }
+          return true;
+        };
+        const start = (e) => {
+          if (e.touches.length !== 1) { allow = false; return; }
+          startY = e.touches[0].clientY; dy = 0; dragging = false;
+          allow = scrollerAtTop(e.target);
+        };
+        const move = (e) => {
+          if (!allow || e.touches.length !== 1) return;
+          dy = e.touches[0].clientY - startY;
+          if (dy <= 0) { if (dragging) { sheet.style.transform = ''; dragging = false; } return; }
+          if (!dragging && !e.cancelable) return;   // browser already scrolling; don't hijack
+          dragging = true;
+          if (e.cancelable) e.preventDefault();     // non-passive listener; skip if already scrolling
+          sheet.classList.add('dragging');
+          sheet.classList.toggle('will-close', dy > Math.min(150, sheet.offsetHeight * 0.28));
+          sheet.style.transform = `translateY(${dy}px)`;
+          if (scrimRef.current) scrimRef.current.style.opacity = String(Math.max(0, 1 - dy / 420));
+        };
+        const end = () => {
+          if (!dragging) return;
+          dragging = false;
+          sheet.classList.remove('dragging');          // restore the transition
+          sheet.classList.remove('will-close');
+          const threshold = Math.min(150, sheet.offsetHeight * 0.28);
+          if (dy > threshold) {
+            // far enough: slide the rest of the way out, then close
+            sheet.style.transform = 'translateY(100%)';
+            if (scrimRef.current) scrimRef.current.style.opacity = '0';
+            setTimeout(() => onCloseRef.current(), 280);
+          } else {
+            // not far enough: snap back into place
+            sheet.style.transform = '';
+            if (scrimRef.current) scrimRef.current.style.opacity = '';
+          }
+          dy = 0;
+        };
+        sheet.addEventListener('touchstart', start, { passive: true });
+        sheet.addEventListener('touchmove', move, { passive: false });
+        sheet.addEventListener('touchend', end);
+        sheet.addEventListener('touchcancel', end);
+        return () => {
+          sheet.removeEventListener('touchstart', start);
+          sheet.removeEventListener('touchmove', move);
+          sheet.removeEventListener('touchend', end);
+          sheet.removeEventListener('touchcancel', end);
+        };
+      }, []);
+
+      // clear any leftover drag transform / scrim fade when (re)opening, and
+      // lock background scrolling while the sheet is up (document scrolls on mobile).
+      useEffect(() => {
+        if (open) {
+          if (sheetRef.current) sheetRef.current.style.transform = '';
+          if (scrimRef.current) scrimRef.current.style.opacity = '';
+          document.body.style.overflow = 'hidden';
+        } else {
+          document.body.style.overflow = '';
+        }
+        return () => { document.body.style.overflow = ''; };
+      }, [open]);
+
+      return html`<div class=${'sheet-wrap' + (open ? ' open' : '')}>
+        <div class="sheet-scrim" ref=${scrimRef} onClick=${animateClose}></div>
+        <div class="sheet" ref=${sheetRef}>
+          <div class="grab-zone" onClick=${animateClose}>
+            <div class="grabber"></div>
+          </div>
+          ${open ? children : null}
+        </div>
+      </div>`;
+    }
+
+    /* -------------------------------- App --------------------------------- */
+    /* --------------------------- Add from YouTube -------------------------- */
+    // Native replacement for the legacy /yt iframe: paste a link → review the
+    // auto-filled title / singer / lyrics source → submit, then watch the live
+    // processing queue (which polls itself instead of needing a manual refresh).
+    function YtAddView({ t, onToast, initialUrl }) {
+      const [tab, setTab] = useState('add');           // add | queue
+      const [url, setUrl] = useState(initialUrl || '');
+      const [fetching, setFetching] = useState(false);
+      const [info, setInfo] = useState(null);          // video_info from /yt_link
+      const [title, setTitle] = useState('');
+      const [singer, setSinger] = useState('');
+      const [caps, setCaps] = useState('');
+      const [err, setErr] = useState('');
+      const [submitting, setSubmitting] = useState(false);
+      const [singers, setSingers] = useState([]);
+      const [acOpen, setAcOpen] = useState(false);
+      const [list, setList] = useState([]);
+      const [confirmDbl, setConfirmDbl] = useState(false);   // "double-check" gate
+      const valsRef = useRef({ title: '', singer: '' });     // live field values for swipe base
+      valsRef.current = { title, singer };
+      const titleAreaRef = useRef(null);                     // multiline song-title box
+      const freezeTitleRef = useRef(false);                  // pause auto-grow during a pan-select
+      const autosizeTitle = useCallback(() => {
+        const el = titleAreaRef.current; if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+      }, []);
+
+      useEffect(() => { api.singers().then(setSingers); }, []);
+      // grow the title box to fit its content — but never mid-pan, or the chips below
+      // would shift under the finger and throw off the selection
+      useEffect(() => { if (!freezeTitleRef.current) autosizeTitle(); }, [title, info, autosizeTitle]);
+
+      // Poll the processing queue while the modal is open — quicker while work is
+      // in flight, slower when idle. (The legacy page only refreshed on a tap.)
+      const loadList = useCallback(async () => {
+        try { const r = await fetch('/yt_list'); const d = await r.json(); setList(Array.isArray(d) ? d : []); } catch {}
+      }, []);
+      const active = useMemo(() => list.filter((x) => x[2] <= 1000 && x[2] !== -1).length, [list]);
+      useEffect(() => {
+        loadList();
+        const id = setInterval(loadList, (active > 0 || tab === 'queue') ? 2500 : 6000);
+        return () => clearInterval(id);
+      }, [loadList, tab, active]);
+
+      const fetchInfo = useCallback(async (explicit) => {
+        const link = (explicit != null ? explicit : url).trim();
+        if (!link || fetching) return;
+        setFetching(true); setErr('');
+        try {
+          const r = await fetch('/yt_link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: link }) });
+          const data = await r.json();
+          // backend returns a plain string when the video is too long, null on a bad link
+          if (typeof data === 'string') setErr(t('duration_disallowed'));
+          else if (!data || typeof data !== 'object' || !data.title) setErr(t('yt_err_link'));
+          else if (data.duration > 600) setErr(t('duration_disallowed'));
+          else { setInfo(data); setTitle(data.title || ''); setSinger(data.singer || ''); setCaps(''); }
+        } catch { setErr(t('yt_err_link')); }
+        setFetching(false);
+      }, [url, fetching, t]);
+
+      // If opened with a link pasted from the search box, fetch it immediately and
+      // skip straight to the review step.
+      useEffect(() => { if (initialUrl) fetchInfo(initialUrl); /* eslint-disable-next-line */ }, []);
+
+      const resetForm = useCallback(() => { setInfo(null); setUrl(''); setTitle(''); setSinger(''); setCaps(''); setErr(''); }, []);
+
+      const doSubmit = useCallback(async () => {
+        if (submitting) return;
+        setConfirmDbl(false); setSubmitting(true); setErr('');
+        try {
+          const payload = { url: url.trim(), title: title.trim(), singer: singer.trim() };
+          if (caps) payload.caps = caps;
+          await fetch('/add_yt_source', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          onToast(t('yt_added'), 'good', '▶');
+          resetForm(); setTab('queue'); loadList();
+        } catch { setErr(t('yt_err_submit')); }
+        setSubmitting(false);
+      }, [title, singer, url, caps, submitting, onToast, t, resetForm, loadList]);
+
+      // The server matches lyrics off the exact song name + singer, so if the user
+      // submits the auto-parsed values untouched, ask them to double-check first.
+      const untouched = info && title.trim() === (info.title || '').trim() && singer.trim() === (info.singer || '').trim();
+      const onSubmitClick = useCallback(() => {
+        if (!title.trim()) { setErr(t('yt_err_title')); return; }
+        if (untouched) { setConfirmDbl(true); return; }
+        doSubmit();
+      }, [title, untouched, doSubmit, t]);
+
+      // Append a token, inserting a space only between ASCII words (English stays
+      // spaced, CJK stays tight).
+      const smartAppend = (v, tok) => {
+        const sp = v && /[A-Za-z0-9]$/.test(v) && /^[A-Za-z0-9]/.test(tok) ? ' ' : '';
+        return v + sp + tok;
+      };
+
+      // Tap a chip to add its token; or press and drag across chips to add a whole
+      // range at once — iOS-Photos pan-to-select. Selection spans every chip between
+      // the anchor (where the drag started) and the chip under the finger, *in index
+      // order* — so panning past skipped chips fills them in, and panning back drops
+      // them again. The field is rebuilt from its pre-drag value each move, so it is
+      // fully revertible until the finger lifts.
+      const startChipSwipe = (key) => (e) => {
+        if (e.button != null && e.button > 0) return;
+        const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
+        const setter = key === 'singer' ? setSinger : setTitle;
+        const sug = (info && info.suggestions) || [];
+        const base = valsRef.current[key] || '';               // field value before this stroke
+        const startChip = e.currentTarget;
+        const rowEl = startChip.closest('.yt-chips');
+        const anchor = +startChip.dataset.index;
+        const sx = e.clientX, sy = e.clientY;
+        let mode = 'idle', cur = anchor, blockTouch = null;
+
+        const apply = (current) => {
+          cur = current;
+          const step = current >= anchor ? 1 : -1;
+          let v = base;
+          for (let i = anchor; ; i += step) { v = smartAppend(v, sug[i]); if (i === current) break; }
+          setter(v);
+          const lo = Math.min(anchor, current), hi = Math.max(anchor, current);
+          if (rowEl) rowEl.querySelectorAll('.yt-chip').forEach((c) => {
+            const idx = +c.dataset.index; c.classList.toggle('picked', idx >= lo && idx <= hi);
           });
-          a.appendChild(b);
+        };
+        const chipIndexAt = (x, y) => {
+          const el = document.elementFromPoint(x, y);
+          const chip = el && el.closest ? el.closest('.yt-chip') : null;
+          if (!chip || (rowEl && chip.closest('.yt-chips') !== rowEl)) return null;
+          return +chip.dataset.index;
+        };
+        const onMove = (ev) => {
+          if (mode === 'idle') {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            if (Math.hypot(dx, dy) < (touch ? 12 : 8)) return;        // wait for a clear intent
+            // On touch, only begin selecting on a *horizontal* swipe; a vertical drag
+            // is meant to scroll the list, so bail and let the browser scroll it.
+            if (touch && Math.abs(dx) <= Math.abs(dy) * 1.2) { mode = 'scroll'; cleanup(); return; }
+            mode = 'paint';
+            if (key === 'title') freezeTitleRef.current = true;        // pin title height — no chip jitter
+            if (touch) {
+              // guard preventDefault: once the browser is scrolling, touchmove is
+              // non-cancelable and trying to cancel it logs an [Intervention] warning
+              blockTouch = (tm) => { if (tm.cancelable) tm.preventDefault(); };
+              document.addEventListener('touchmove', blockTouch, { passive: false });
+            }
+            apply(anchor);
+          }
+          if (ev.cancelable) ev.preventDefault();
+          const idx = chipIndexAt(ev.clientX, ev.clientY);
+          if (idx != null && idx !== cur) apply(idx);
+        };
+        const onUp = () => {
+          if (mode === 'idle') setter(smartAppend(base, sug[anchor]));   // plain tap = one token
+          cleanup();
+        };
+        function cleanup() {
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onUp);
+          if (blockTouch) { document.removeEventListener('touchmove', blockTouch); blockTouch = null; }
+          if (key === 'title') { freezeTitleRef.current = false; requestAnimationFrame(autosizeTitle); }
+          if (rowEl) setTimeout(() => rowEl.querySelectorAll('.yt-chip.picked').forEach((c) => c.classList.remove('picked')), 280);
         }
-      }
-  });
-  inp.addEventListener("focus", function(e) {
-      var a, b, i, val = this.value;
-      /*close any already open lists of autocompleted values*/
-      closeAllLists();
-      currentFocus = -1;
-      /*create a DIV element that will contain the items (values):*/
-      a = document.createElement("DIV");
-      a.setAttribute("id", this.id + "autocomplete-list");
-      a.setAttribute("class", "autocomplete-items");
-      /*append the DIV element as a child of the autocomplete container:*/
-      this.parentNode.appendChild(a);
-      /*for each item in the array...*/
-      for (i = 0; i < arr.length; i++) {
-        /*check if the item starts with the same letters as the text field value:*/
-        if (arr[i].substr(0, val.length).toUpperCase() == val.toUpperCase()) {
-          /*create a DIV element for each matching element:*/
-          b = document.createElement("DIV");
-          /*make the matching letters bold:*/
-          b.innerHTML += arr[i].substr(val.length);
-          /*insert a input field that will hold the current array item's value:*/
-          b.innerHTML += "<input type='hidden' value='" + arr[i] + "'>";
-          /*execute a function when someone clicks on the item value (DIV element):*/
-              b.addEventListener("click", function(e) {
-              /*insert the value for the autocomplete text field:*/
-              inp.value = this.getElementsByTagName("input")[0].value;
-              /*close the list of autocompleted values,
-              (or any other open lists of autocompleted values:*/
-              query();
-              closeAllLists();
-          });
-          a.appendChild(b);
-        }
-      }
-  });
+        document.addEventListener('pointermove', onMove, { passive: false });
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onUp);
+      };
 
-  /*execute a function presses a key on the keyboard:*/
-  inp.addEventListener("keydown", function(e) {
-      var x = document.getElementById(this.id + "autocomplete-list");
-      if (x) x = x.getElementsByTagName("div");
-      if (e.keyCode == 40) {
-        /*If the arrow DOWN key is pressed,
-        increase the currentFocus variable:*/
-        currentFocus++;
-        /*and and make the current item more visible:*/
-        addActive(x);
-      } else if (e.keyCode == 38) { //up
-        /*If the arrow UP key is pressed,
-        decrease the currentFocus variable:*/
-        currentFocus--;
-        /*and and make the current item more visible:*/
-        addActive(x);
-      } else if (e.keyCode == 13) {
-        /*If the ENTER key is pressed, prevent the form from being submitted,*/
-        e.preventDefault();
-        if (currentFocus > -1) {
-          /*and simulate a click on the "active" item:*/
-          if (x) x[currentFocus].click();
-        }
-      }
-  });
-  function addActive(x) {
-    /*a function to classify an item as "active":*/
-    if (!x) return false;
-    /*start by removing the "active" class on all items:*/
-    removeActive(x);
-    if (currentFocus >= x.length) currentFocus = 0;
-    if (currentFocus < 0) currentFocus = (x.length - 1);
-    /*add class "autocomplete-active":*/
-    x[currentFocus].classList.add("autocomplete-active");
-  }
-  function removeActive(x) {
-    /*a function to remove the "active" class from all autocomplete items:*/
-    for (var i = 0; i < x.length; i++) {
-      x[i].classList.remove("autocomplete-active");
+      const sugChips = (key) => (info && info.suggestions && info.suggestions.length) ? html`
+        <div class="yt-chips">
+          <span class="qf-label">${t('yt_quickfill')}</span>
+          ${info.suggestions.map((s, i) => html`<button key=${i} class="yt-chip" data-index=${i} onPointerDown=${startChipSwipe(key)}>${s}</button>`)}
+        </div>` : null;
+
+      const acMatches = useMemo(() => {
+        const v = singer.trim().toUpperCase();
+        return (v ? singers.filter((s) => s.toUpperCase().includes(v)) : singers).slice(0, 30);
+      }, [singer, singers]);
+
+      const fmtDur = (s) => { s = s | 0; return ((s / 60) | 0) + ':' + String(s % 60).padStart(2, '0'); };
+      const hasCaps = info && info.captions && (((info.captions.original || []).length) || ((info.captions.generated || []).length));
+
+      const tabs = [
+        { id: 'add', icon: '＋', label: t('yt_add_tab') },
+        { id: 'queue', icon: '☰', label: t('yt_queue_tab'), badge: active },
+      ];
+
+      return html`<div class="yt-flow">
+        <div class="yt-tabs">
+          <div class="seg">
+            ${tabs.map((tb) => html`<button key=${tb.id} class=${tab === tb.id ? 'active' : ''} onClick=${() => setTab(tb.id)}>
+              <span class="si">${tb.icon}</span><span class="sl">${tb.label}</span>
+              ${tb.badge ? html`<span class="tab-badge">${tb.badge}</span>` : null}</button>`)}
+          </div>
+        </div>
+
+        <div class="yt-body">
+          ${tab === 'add' ? (fetching && !info ? html`
+            <div class="yt-loading"><div class="spinner"></div><div>${t('yt_fetching')}</div></div>
+          ` : !info ? html`
+            <div class="yt-form">
+              <div class="field">
+                <span class="fi">🔗</span>
+                <input value=${url} placeholder=${t('yt_link_ph')} autoComplete="off" inputMode="url"
+                  onInput=${(e) => setUrl(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') fetchInfo(); }} />
+                ${url ? html`<button class="clear-x" onClick=${() => setUrl('')}>✕</button>` : null}
+              </div>
+              <button class="cta" disabled=${fetching || !url.trim()} onClick=${() => fetchInfo()}>
+                ${fetching ? html`<span class="btn-spin"></span>` : html`<span class="yi">▶</span>`} ${t('yt_fetch')}
+              </button>
+              ${err ? html`<div class="yt-err">${err}</div>` : null}
+              <div class="yt-help">${t('yt_link_help')}</div>
+            </div>
+          ` : html`
+            <div class="yt-form">
+              <div class="yt-thumb">
+                ${info.thumbnail ? html`<img src=${info.thumbnail} alt="" />` : null}
+                <button class="yt-change" onClick=${resetForm}>↺ ${t('yt_change')}</button>
+                ${info.duration ? html`<span class="yt-dur">${fmtDur(info.duration)}</span>` : null}
+              </div>
+
+              <div class="yt-field-wrap">
+                <div class="yt-label">🎵 ${t('yt_song_name')}</div>
+                <div class="field ta-field">
+                  <span class="fi">🎵</span>
+                  <textarea ref=${titleAreaRef} class="yt-ta" rows="1" value=${title} placeholder=${t('yt_song_name')}
+                    autoComplete="off" spellCheck="false" onInput=${(e) => setTitle(e.target.value)}></textarea>
+                  ${title ? html`<button class="clear-x" onClick=${() => setTitle('')}>✕</button>` : null}
+                </div>
+                ${sugChips('title')}
+              </div>
+
+              <div class="yt-field-wrap">
+                <div class="yt-label">🎤 ${t('yt_singer')}</div>
+                <div class="field">
+                  <span class="fi">🎤</span>
+                  <input value=${singer} placeholder=${t('yt_singer')} autoComplete="off"
+                    onInput=${(e) => { setSinger(e.target.value); setAcOpen(true); }}
+                    onFocus=${() => setAcOpen(true)} onBlur=${() => setTimeout(() => setAcOpen(false), 150)} />
+                  ${singer ? html`<button class="clear-x" onClick=${() => setSinger('')}>✕</button>` : null}
+                  ${acOpen && acMatches.length > 0 ? html`<div class="ac-list">
+                    ${acMatches.map((s) => html`<div key=${s} class="ac-item" onMouseDown=${() => { setSinger(s); setAcOpen(false); }}><span class="fi">🎤</span>${s}</div>`)}
+                  </div>` : null}
+                </div>
+                ${sugChips('singer')}
+              </div>
+
+              ${hasCaps ? html`
+                <div class="yt-field-wrap">
+                  <div class="yt-label">💬 ${t('yt_caption')}</div>
+                  <select class="yt-select" value=${caps} onChange=${(e) => setCaps(e.target.value)}>
+                    <option value="">${t('yt_cap_none')}</option>
+                    ${(info.captions.original || []).map((c, i) => html`<option key=${'o' + i} value=${c[1]}>${t('yt_cap_orig')} · ${c[0]}</option>`)}
+                    ${(info.captions.generated || []).map((c, i) => html`<option key=${'g' + i} value=${c[1]}>${t('yt_cap_auto')} · ${c[0]}</option>`)}
+                  </select>
+                </div>` : null}
+
+              ${err ? html`<div class="yt-err">${err}</div>` : null}
+              <div class="yt-actions">
+                <button class="yt-reset" onClick=${resetForm}>${t('yt_reset')}</button>
+                <button class="yt-submit" disabled=${submitting || !title.trim()} onClick=${onSubmitClick}>
+                  ${submitting ? html`<span class="btn-spin"></span>` : html`<span>▶</span>`} ${t('yt_submit')}
+                </button>
+              </div>
+            </div>
+          `) : html`
+            ${list.length === 0 ? html`
+              <div class="empty"><div class="em-ic">📺</div><div class="em-t">${t('yt_queue_empty_t')}</div><div class="em-s">${t('yt_queue_empty_sub')}</div></div>
+            ` : html`<div class="yt-list">
+              ${[...list].reverse().map((it, i) => {
+                const st = it[2];
+                const cls = st > 1000 ? 'done' : st === -1 ? 'err' : st === 0 ? 'pending' : 'proc';
+                const label = st > 1000 ? t('yt_st_done') : st === -1 ? t('yt_st_err') : st === 0 ? t('yt_st_pending') : t('yt_st_proc');
+                return html`<div class="yt-item" key=${i}>
+                  <div class="yt-it-main">
+                    <div class="yt-it-name">${it[0]}</div>
+                    ${it[1] ? html`<div class="yt-it-sub">🎤 ${it[1]}</div>` : null}
+                  </div>
+                  <span class=${'yt-pill ' + cls}>${cls === 'proc' ? html`<span class="pdot"></span>` : null}${label}</span>
+                </div>`;
+              })}
+            </div>`}
+          `}
+        </div>
+
+        ${confirmDbl ? html`<div class="overlay" onClick=${() => setConfirmDbl(false)}>
+          <div class="dialog" onClick=${(e) => e.stopPropagation()}>
+            <div class="dg-ic">🔎</div><h3>${t('yt_dbl_t')}</h3><p>${t('yt_dbl_p')}</p>
+            <div class="yt-dbl-preview">
+              <div><span>🎵</span>${title}</div>
+              <div><span>🎤</span>${singer || '—'}</div>
+            </div>
+            <div class="dg-actions">
+              <button class="dg-cancel" onClick=${() => setConfirmDbl(false)}>${t('yt_dbl_edit')}</button>
+              <button class="dg-ok" onClick=${doSubmit}>${t('yt_dbl_ok')}</button>
+            </div>
+          </div>
+        </div>` : null}
+      </div>`;
     }
-  }
-  function closeAllLists(elmnt) {
-    /*close all autocomplete lists in the document,
-    except the one passed as an argument:*/
-    var x = document.getElementsByClassName("autocomplete-items");
-    for (var i = 0; i < x.length; i++) {
-      if (elmnt != x[i] && elmnt != inp) {
-      x[i].parentNode.removeChild(x[i]);
+
+    function App() {
+      const { lang, t, changeLang } = useI18n();
+      const queue = useQueue();
+      const [toasts, setToasts] = useState([]);
+      const [langOpen, setLangOpen] = useState(false);
+      const [ytOpen, setYtOpen] = useState(false);
+      const [ytUrl, setYtUrl] = useState('');            // prefill for the YT modal (paste-in-search shortcut)
+      const [sheetOpen, setSheetOpen] = useState(false);
+      const [confirm, setConfirm] = useState(null);
+      const [vocalOn, setVocalOn] = useState(null);
+      const [bump, setBump] = useState(false);
+      const [minimizing, setMinimizing] = useState(false);
+      const toastSeq = useRef(0);
+      const prevLen = useRef(0);
+      const prevSheet = useRef(false);
+
+      // When the expanded sheet closes, play a "collapse into the pill" animation.
+      useEffect(() => {
+        if (prevSheet.current && !sheetOpen) {
+          setMinimizing(true);
+          const h = setTimeout(() => setMinimizing(false), 480);
+          prevSheet.current = sheetOpen;
+          return () => clearTimeout(h);
+        }
+        prevSheet.current = sheetOpen;
+      }, [sheetOpen]);
+
+      // id -> index in queue (0 = now playing). Drives position cues everywhere.
+      const posMap = useMemo(() => { const m = new Map(); queue.forEach((s, i) => m.set(s[0], i)); return m; }, [queue]);
+
+      // Pulse the queue badge whenever the line grows.
+      useEffect(() => {
+        if (queue.length > prevLen.current && prevLen.current !== 0) {
+          setBump(true); const h = setTimeout(() => setBump(false), 520); prevLen.current = queue.length; return () => clearTimeout(h);
+        }
+        prevLen.current = queue.length;
+      }, [queue.length]);
+
+      const toast = useCallback((msg, kind = '', icon = '✓') => {
+        const id = ++toastSeq.current;
+        setToasts((p) => [...p, { id, msg, kind, icon }]);
+        setTimeout(() => setToasts((p) => p.filter((x) => x.id !== id)), 2400);
+      }, []);
+
+      // open the YT add modal; with a url it jumps straight to the review step
+      const openYt = useCallback((url) => { setYtUrl(typeof url === 'string' ? url : ''); setYtOpen(true); }, []);
+      const closeYt = useCallback(() => { setYtOpen(false); setYtUrl(''); }, []);
+
+      const add = useCallback(async (song) => {
+        if (posMap.has(song[0])) return;
+        // Optimistic position = current line length (slot it will fall into).
+        const slot = Math.max(1, queue.length);
+        await api.op({ op: 'add', song });
+        if (queue.length === 0) toast(t('added_first'), 'good', '🎤');
+        else toast(t('added_pos').replace('{n}', lang === 'en' ? ordinal(slot) : slot), 'good', '🎵');
+      }, [posMap, queue.length, toast, t, lang]);
+
+      const toggleVocal = useCallback(async () => { setVocalOn(await api.vocal()); }, []);
+      const top = useCallback(async (id) => { await api.op({ op: 'top', id }); toast(t('moved_toast'), 'good', '⤒'); }, [toast, t]);
+      const remove = useCallback(async (id) => { await api.op({ op: 'remove', id }); toast(t('removed_toast'), '', '🗑️'); }, [toast, t]);
+      const replay = useCallback(async () => { await api.op({ op: 'replay' }); toast(t('replayed_toast'), 'good', '↻'); }, [toast, t]);
+      const askSkip = useCallback(() => setConfirm({
+        icon: '⏭', title: t('skip_confirm_t'), msg: t('skip_confirm_p'), danger: true, ok: t('confirm_skip'),
+        onOk: async () => { setConfirm(null); await api.op({ op: 'skip' }); toast(t('skipped_toast'), 'warn', '⏭'); },
+      }), [t, toast]);
+
+      const stageProps = { t, queue, vocalOn, onToggleVocal: toggleVocal, onReplay: replay, onSkip: askSkip, onTop: top, onRemove: remove };
+
+      return html`<div class="app">
+        <header class="topbar">
+          <div class="brand">
+            <div class="logo">🎤</div>
+            <div class="brand-text"><div>KORTC</div><div class="sub">${t('brand_sub')}</div></div>
+          </div>
+          <div class="spacer"></div>
+          <button class="icon-btn" onClick=${() => setLangOpen((v) => !v)} title="Language">🌐</button>
+        </header>
+
+        ${langOpen ? html`<div class="lang-menu">
+          ${[['zh-CN', '🇨🇳', '简体中文'], ['en', '🇬🇧', 'English']].map(([code, flag, label]) => html`
+            <button key=${code} class=${lang === code ? 'active' : ''} onClick=${() => { changeLang(code); setLangOpen(false); }}>
+              <span>${flag}</span>${label}${lang === code ? ' ✓' : ''}</button>`)}
+        </div>` : null}
+
+        <div class="content">
+          <${BrowseView} t=${t} posMap=${posMap} onAdd=${add} openYt=${openYt} />
+          <aside class="stage-panel"><${Stage} ...${stageProps} /></aside>
+        </div>
+
+        <${MiniPlayer} t=${t} queue=${queue} bump=${bump} minimizing=${minimizing} onOpen=${() => setSheetOpen(true)} />
+
+        <${PlayerSheet} open=${sheetOpen} onClose=${() => setSheetOpen(false)}>
+          <${Stage} ...${stageProps} />
+        <//>
+
+        <${Toasts} items=${toasts} />
+
+        ${confirm ? html`<div class="overlay" onClick=${() => setConfirm(null)}>
+          <div class="dialog" onClick=${(e) => e.stopPropagation()}>
+            <div class="dg-ic">${confirm.icon}</div><h3>${confirm.title}</h3><p>${confirm.msg}</p>
+            <div class="dg-actions">
+              <button class="dg-cancel" onClick=${() => setConfirm(null)}>${t('cancel')}</button>
+              <button class=${'dg-ok ' + (confirm.danger ? 'danger' : '')} onClick=${confirm.onOk}>${confirm.ok}</button>
+            </div>
+          </div>
+        </div>` : null}
+
+        ${ytOpen ? html`<div class="overlay" onClick=${closeYt}>
+          <div class="yt-modal" onClick=${(e) => e.stopPropagation()}>
+            <div class="yt-head"><span>▶ ${t('yt_modal_title')}</span><span class="spacer"></span>
+              <button class="q-btn danger" onClick=${closeYt}>✕</button></div>
+            <${YtAddView} t=${t} onToast=${toast} initialUrl=${ytUrl} />
+          </div>
+        </div>` : null}
+      </div>`;
     }
-    // query();
-  }
-}
-/*execute a function when someone clicks in the document:*/
-document.addEventListener("click", function (e) {
-    closeAllLists(e.target);
-});
-}
 
-fetch('/singers').then(async (response)=>{
-    singers = await response.json();
-    autocomplete(document.getElementById("singer"), singers);
-})
-</script>
-
+    createRoot(document.getElementById('root')).render(html`<${App} />`);
+  </script>
 </body>
 </html>

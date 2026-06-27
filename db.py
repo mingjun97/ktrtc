@@ -3,7 +3,13 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base
 import threading
 import os
+import time
 import pinyin
+
+# Cache for the ranked singer list. Computing it scans the whole catalog and
+# aggregates pick counts, so it is recomputed at most once per TTL window.
+_SINGERS_CACHE = {"data": None, "ts": 0.0}
+_SINGERS_TTL = 2 * 60 * 60  # 2 hours (minimum); rankings drift slowly
 
 MDB = 'db.sqlite'
 media_prefix = "/media/"
@@ -63,7 +69,7 @@ def path_wrapper(path):
    ret = path.replace('\\', '/').replace('//Mac/ktv/', media_prefix)
    return ret
 
-async def query(keyword="", singer="", page=0, per_page=10):
+async def query(keyword="", singer="", page=0, per_page=10, source=""):
    async with engine.begin() as conn:
       stmt = select(
          song.c.SongID, song.c.SONGNAME, song.c.SINGER, song.c.FileName
@@ -72,7 +78,11 @@ async def query(keyword="", singer="", page=0, per_page=10):
       ).where(
          song.c.SINGER.like(f"%{singer}%")
       )
-      
+
+      # YouTube-sourced songs are stored with a "(YTB)" suffix on the song name.
+      if source == "ytb":
+         stmt = stmt.where(song.c.SONGNAME.like("%(YTB)%"))
+
       count = await conn.scalar(select(func.count()).select_from(stmt.subquery()))
 
       if keyword:
@@ -87,11 +97,28 @@ async def query(keyword="", singer="", page=0, per_page=10):
       return count, list(map(list,rows))
 
 async def get_singers():
+   # Serve from cache while it is still fresh (>= 2h) to avoid recomputing the
+   # costly full-catalog aggregation on every request.
+   now = time.time()
+   if _SINGERS_CACHE["data"] is not None and now - _SINGERS_CACHE["ts"] < _SINGERS_TTL:
+      return _SINGERS_CACHE["data"]
+
    async with engine.begin() as conn:
-      stmt = "SELECT SingerName FROM Singerinfo ORDER BY SingerName"
+      # Source singers from the actual song catalog (VOD_song) rather than the
+      # Singerinfo lookup table (which only holds ~1,700 of 27,800+ names), and
+      # rank them by how often their songs get picked: SUM(ClickCount) is the
+      # total play/pick count, so the most-requested singers come first.
+      # Never-picked singers fall to the bottom, ordered alphabetically.
+      stmt = ("SELECT TRIM(SINGER) AS s, SUM(ClickCount) AS picks FROM VOD_song "
+              "WHERE SINGER IS NOT NULL AND TRIM(SINGER) <> '' "
+              "GROUP BY TRIM(SINGER) ORDER BY picks DESC, s ASC")
       result = await conn.execute(text(stmt))
       rows = result.fetchall()
-      return [row[0] for row in rows]
+      data = [row[0] for row in rows]
+
+   _SINGERS_CACHE["data"] = data
+   _SINGERS_CACHE["ts"] = now
+   return data
 
 async def get_song_by_id(song_id):
    async with engine.begin() as conn:
@@ -117,7 +144,9 @@ async def add_song(song_name, singer, filename):
             if not str.is_punctuation(ch):
                spell += ch
       stmt = song.insert().values(SONGNAME=song_name, SINGER=singer, FileName=filename, spell=spell, WordCount=len(song_name))
-      await conn.execute(stmt)
+      ret = await conn.execute(stmt)
+      return ret.inserted_primary_key[0]
+
 
 if __name__ == '__main__':
    import asyncio
